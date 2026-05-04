@@ -31,8 +31,9 @@ func NewApp() *Application {
 
 	// Add middleware
 	r.Use(
-		gin.Recovery(),
 		m.Logger(),
+		gin.Recovery(),
+		m.ErrorHandler(),
 	)
 
 	return &Application{
