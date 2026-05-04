@@ -1,0 +1,5 @@
+/docs
+
+.env
+local.yaml
+production.yaml
