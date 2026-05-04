@@ -8,3 +8,7 @@ type ServerConfig struct {
 	WriteTimeout    int    `mapstructure:"writeTimeout"`
 	ShutdownTimeout int    `mapstructure:"shutdownTimeout"`
 }
+
+func (s *ServerConfig) IsProduction() bool {
+	return s.Mode == "production"
+}

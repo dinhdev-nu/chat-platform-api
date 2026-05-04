@@ -2,7 +2,6 @@ package initialize
 
 import (
 	"fmt"
-	"os"
 
 	c "github.com/dinhdev-nu/chat-platform-api/config"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
@@ -16,11 +15,6 @@ type Application struct {
 }
 
 func NewApp() *Application {
-	env := os.Getenv("APP_ENV")
-	if env == "" {
-		env = "local"
-	}
-
 	// Load configuration
 	cfg := LoadConfig()
 	g.Config = cfg

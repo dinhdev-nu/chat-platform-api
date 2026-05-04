@@ -2,8 +2,17 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"slices"
+	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
+)
+
+const (
+	EnvLocal      = "local"
+	EnvProduction = "production"
 )
 
 type Config struct {
@@ -15,7 +24,21 @@ type Config struct {
 	Jwt    JwtConfig    `mapstructure:"jwt"`
 }
 
-func Load(env string) (*Config, error) {
+func Load() (*Config, error) {
+	if err := godotenv.Load(); err != nil {
+		fmt.Printf("No .env file found: %v\n", err)
+	}
+
+	env := strings.TrimSpace(os.Getenv("APP_ENV"))
+	if env == "" {
+		env = EnvLocal
+	}
+
+	fmt.Printf("Loading configuration for environment: %s\n", env)
+
+	if err := validateEnv(env); err != nil {
+		return nil, err
+	}
 
 	v := viper.New()
 	v.SetConfigName(env)
@@ -24,6 +47,10 @@ func Load(env string) (*Config, error) {
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("error reading config file %s.yaml : %w", env, err)
+	}
+
+	if err := expandEnvVars(v); err != nil {
+		return nil, fmt.Errorf("failed to expand env vars: %w", err)
 	}
 
 	var cfg Config
@@ -36,6 +63,17 @@ func Load(env string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func expandEnvVars(v *viper.Viper) error {
+	for _, key := range v.AllKeys() {
+		value := v.GetString(key)
+		if strings.Contains(value, "${") {
+			expanded := os.ExpandEnv(value)
+			v.Set(key, expanded)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
@@ -55,4 +93,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("jwt secret must be specified")
 	}
 	return nil
+}
+
+func validateEnv(env string) error {
+	allowed := []string{EnvLocal, EnvProduction}
+	if ok := slices.Contains(allowed, env); ok {
+		return nil
+	}
+	return fmt.Errorf("invalid APP_ENV: %s, allowed values are: %v", env, allowed)
 }

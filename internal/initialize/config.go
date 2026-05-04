@@ -7,7 +7,7 @@ import (
 )
 
 func LoadConfig() *c.Config {
-	cfg, err := c.Load("local")
+	cfg, err := c.Load()
 	if err != nil {
 		panic(fmt.Errorf("failed to load config: %w", err))
 	}
