@@ -1,0 +1,45 @@
+server:
+  port: 8080
+  host: localhost
+  mode: development 
+  readTimeout: 30 # Thời gian tối đa để đọc toàn bộ yêu cầu (tính bằng giây)
+  writeTimeout: 30 # Thời gian tối đa để ghi toàn bộ phản hồi (tính bằng giây)
+  shutdownTimeout: 10 # Thời gian tối đa để chờ các kết nối hiện tại hoàn thành khi tắt máy chủ (tính bằng giây)
+
+mysql:
+  host: localhost
+  port: 3306
+  username: root
+  password: 123456
+  database: chat_platform_api
+  maxIdleConns: 10 # Số lượng kết nối tối đa trong pool
+  maxOpenConns: 10 # Số lượng kết nối tối đa có thể mở đồng thời
+  maxLifetime: 3600 # Thời gian tối đa mà một kết nối có thể tồn tại 
+
+redis: 
+  host: localhost
+  port: 6379
+  password: ""
+  db: 3
+  poolSize: 10 # Số lượng kết nối tối đa trong pool
+  minIdleConns: 5 # Số lượng kết nối tối thiểu trong pool
+
+logger: 
+  level: debug
+  dir: ./logs
+  maxSizeMB: 100
+  maxBackups: 30
+  maxAgeDays: 30
+  compress: false
+
+jwt: 
+  secret: "your_secret_key"
+  expireTime: 3600 # Thời gian hết hạn token (tính bằng giây)
+
+mail:
+  host: smtp.gmail.com
+  port: 465
+  from: yourremail
+  password: yourpassword
+
+

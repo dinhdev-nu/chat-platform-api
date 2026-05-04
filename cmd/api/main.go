@@ -1,7 +1,10 @@
 package main
 
-import "fmt"
+import i "github.com/dinhdev-nu/chat-platform-api/internal/initialize"
 
 func main() {
-	fmt.Println("Hello, World!")
+
+	app := i.NewApp()
+	app.Run()
+
 }
