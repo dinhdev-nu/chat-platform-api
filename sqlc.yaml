@@ -1,0 +1,20 @@
+version: "2"
+sql:
+  - engine:  "mysql"
+    queries: "./internal/infrastructure/mysql/query"
+    schema:  "./internal/infrastructure/mysql/migration"
+    gen:
+      go:
+        package:               "sqlc"
+        out:                   "./internal/infrastructure/mysql/sqlc"
+        emit_prepared_queries: true
+        emit_json_tags:        true
+        emit_interfaces:       true
+        emit_empty_slices:     true
+        emit_pointers_for_null_types: true
+        query_parameter_limit: 4
+        ## emit_enum_validations: true
+        ## overrides:
+        ## - db_type: "datetime"
+        ##   go_type: "time.Time"
+

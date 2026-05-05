@@ -1,0 +1,3 @@
+dir: internal/infrastructure/mysql/migrations
+table: goose_db_version
+verbose: true

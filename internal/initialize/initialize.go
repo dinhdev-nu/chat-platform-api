@@ -21,6 +21,7 @@ func NewApp() *Application {
 
 	// Initialize
 	InitLogger()
+	InitMySQL()
 	r := InitRouter()
 
 	// Add middleware
