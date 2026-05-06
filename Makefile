@@ -1,7 +1,7 @@
 APP_ENV ?= local
 APP_NAME := chat-platform-api
 MAIN_PATH := ./cmd/api/main.go
-MIGRATION_DIR := ./internal/infrastructure/mysql/gorm/migrations
+MIGRATION_DIR := ./internal/infrastructure/mysql/migrations
 DSN = "$(shell go run ./cmd/dsn/main.go)"
 
 .PHONY: help
@@ -62,4 +62,5 @@ lint: ## Run linter
 seed: ## Run seed data
 	APP_ENV=$(APP_ENV) go run ./cmd/seed/main.go
 
-
+.DEFAULT: 
+	@echo "No rule target. Please use 'make help'"

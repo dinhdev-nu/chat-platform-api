@@ -24,4 +24,6 @@ func InitMySQL() {
 	// Goose Migrations sử dụng Makefile để chạy không cần Viết AutoMigrate ở đây nữa
 
 	global.MySQLDB = db
+
+	fmt.Println("MySQL initialized successfully")
 }

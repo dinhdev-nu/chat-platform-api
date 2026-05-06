@@ -34,8 +34,6 @@ func Load() (*Config, error) {
 		env = EnvLocal
 	}
 
-	fmt.Printf("Loading configuration for environment: %s\n", env)
-
 	if err := validateEnv(env); err != nil {
 		return nil, err
 	}
