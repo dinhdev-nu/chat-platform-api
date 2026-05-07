@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 )
 
 type UserStatus int8
@@ -28,4 +30,29 @@ type User struct {
 
 func (User) TableName() string {
 	return TableNameGoDBUser
+}
+
+func (u *User) ToDomain() *model.User {
+	return &model.User{
+		ID:         u.ID,
+		Username:   u.Username,
+		Email:      u.Email,
+		AvatarURL:  u.AvatarURL,
+		Bio:        u.Bio,
+		Status:     model.UserStatus(u.Status),
+		LastSeenAt: u.LastSeenAt,
+		CreatedAt:  u.CreatedAt,
+		UpdatedAt:  u.UpdatedAt,
+	}
+}
+
+func UserFormDomain(user *model.User) *User {
+	return &User{
+		ID:        user.ID,
+		Username:  user.Username,
+		Email:     user.Email,
+		AvatarURL: user.AvatarURL,
+		Bio:       user.Bio,
+		Status:    UserStatus(user.Status),
+	}
 }

@@ -1,4 +1,4 @@
-package midleware
+package middleware
 
 import (
 	"github.com/dinhdev-nu/chat-platform-api/global"
@@ -31,6 +31,6 @@ func ErrorHandler() gin.HandlerFunc {
 		}
 
 		global.Logger.Error("Unknown error", zap.Error(err))
-		response.Error(c, errors.InternalServerError(err))
+		response.Error(c, errors.Internal(err))
 	}
 }

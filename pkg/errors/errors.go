@@ -68,7 +68,7 @@ func ValidationError(message string) *AppError {
 	return New(ErrValidation, message)
 }
 
-func InternalServerError(err error) *AppError {
+func Internal(err error) *AppError {
 	return Wrap(ErrInternalServer, "Internal server error", err)
 }
 

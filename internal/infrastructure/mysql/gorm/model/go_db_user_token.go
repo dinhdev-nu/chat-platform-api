@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 )
 
 const TableNameGoDBUserToken = "user_tokens"
@@ -20,4 +22,32 @@ type UserToken struct {
 
 func (UserToken) TableName() string {
 	return TableNameGoDBUserToken
+}
+
+func (t *UserToken) ToDomain() *model.UserToken {
+	return &model.UserToken{
+		ID:         t.ID,
+		UserID:     t.UserID,
+		JTI:        t.JTI,
+		DeviceID:   t.DeviceID,
+		DeviceName: t.DeviceName,
+		IPAddress:  t.IPAddress,
+		ExpiresAt:  t.ExpiresAt,
+		LastUsedAt: t.LastUsedAt,
+		CreatedAt:  t.CreatedAt,
+	}
+}
+
+func UserTokenFromDomain(t *model.UserToken) *UserToken {
+	return &UserToken{
+		ID:         t.ID,
+		UserID:     t.UserID,
+		JTI:        t.JTI,
+		DeviceID:   t.DeviceID,
+		DeviceName: t.DeviceName,
+		IPAddress:  t.IPAddress,
+		ExpiresAt:  t.ExpiresAt,
+		LastUsedAt: t.LastUsedAt,
+		CreatedAt:  t.CreatedAt,
+	}
 }

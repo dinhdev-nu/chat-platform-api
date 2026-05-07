@@ -12,7 +12,7 @@ import (
 
 	c "github.com/dinhdev-nu/chat-platform-api/config"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
-	m "github.com/dinhdev-nu/chat-platform-api/internal/midleware"
+	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 

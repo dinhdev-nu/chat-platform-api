@@ -41,6 +41,10 @@ func OK[T any](c *gin.Context, data *T, message string) {
 	})
 }
 
+func NoContent(c *gin.Context) {
+	c.Status(http.StatusNoContent)
+}
+
 func Created[T any](c *gin.Context, data *T, message string) {
 	c.JSON(http.StatusCreated, Response[T]{
 		Success: true,
