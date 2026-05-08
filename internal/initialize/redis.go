@@ -20,6 +20,7 @@ func InitRedis() {
 	g.Presence = redis.NewPresenceStore(client)
 	g.OTPStore = redis.NewOTPStore(client)
 	g.PubSub = redis.NewPubSubBroker(client)
+	g.Stream = redis.NewStreamStore(client)
 
 	fmt.Println("Redis initialized successfully")
 }
