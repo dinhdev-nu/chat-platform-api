@@ -41,5 +41,6 @@ mail:
   port: 465
   from: yourremail
   password: yourpassword
+  senderName: "Chat Platform API"
 
 
