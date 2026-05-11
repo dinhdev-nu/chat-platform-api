@@ -1,6 +1,8 @@
 package global
 
 import (
+	"database/sql"
+
 	"github.com/dinhdev-nu/chat-platform-api/config"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/mailer"
@@ -14,6 +16,7 @@ var (
 	Logger *zap.Logger
 
 	MySQLDB *gorm.DB
+	SqlDB   *sql.DB
 
 	Mailer mailer.Mailer
 

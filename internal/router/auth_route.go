@@ -2,14 +2,12 @@ package router
 
 import (
 	h "github.com/dinhdev-nu/chat-platform-api/internal/handler"
-	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
-	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 func RegisterAuthRoutes(
-	r *gin.Engine,
-	as *s.AuthService,
+	r *gin.RouterGroup,
+	rp *gin.RouterGroup,
 	ah *h.AuthHandler,
 ) {
 	authGroup := r.Group("/auth")
@@ -17,10 +15,10 @@ func RegisterAuthRoutes(
 		authGroup.POST("/send-otp", ah.SendOTP)
 		authGroup.POST("/verify-otp", ah.VerifyOTP)
 
-		protected := authGroup.Group("").Use(m.AuthMiddleware(as))
-		{
-			protected.POST("/logout", ah.Logout)
-		}
+	}
+	authGroupProtected := rp.Group("/auth")
+	{
+		authGroupProtected.POST("/logout", ah.Logout)
 	}
 
 }

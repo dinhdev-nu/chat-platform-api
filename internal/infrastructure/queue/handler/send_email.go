@@ -11,25 +11,25 @@ import (
 	"go.uber.org/zap"
 )
 
-type sendEmailHandler struct {
+type SendEmailHandler struct {
 	mailer  mailer.Mailer
 	logger  *zap.Logger
 	appName string
 }
 
-func NewSendEmailHandler(m mailer.Mailer, l *zap.Logger, appName string) *sendEmailHandler {
-	return &sendEmailHandler{
+func NewSendEmailHandler(m mailer.Mailer, l *zap.Logger, appName string) queue.Handler {
+	return &SendEmailHandler{
 		mailer:  m,
 		logger:  l,
 		appName: appName,
 	}
 }
 
-func (h *sendEmailHandler) Type() string {
+func (h *SendEmailHandler) Type() string {
 	return queue.JobSendOTPEmail
 }
 
-func (h *sendEmailHandler) Handle(ctx context.Context, job queue.Job) error {
+func (h *SendEmailHandler) Handle(ctx context.Context, job queue.Job) error {
 	var payload queue.SendOTPEmailPayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
 		h.logger.Error("send_email: invalid payload", zap.String("jobID", job.ID), zap.Error(err))

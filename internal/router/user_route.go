@@ -2,17 +2,15 @@ package router
 
 import (
 	h "github.com/dinhdev-nu/chat-platform-api/internal/handler"
-	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
-	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 func RegisterUserRoutes(
-	r *gin.Engine,
+	r *gin.RouterGroup,
+	rp *gin.RouterGroup,
 	uh *h.UserHandler,
-	as *s.AuthService,
 ) {
-	userGroup := r.Group("/user").Use(m.AuthMiddleware(as))
+	userGroup := rp.Group("/user")
 	{
 		userGroup.GET("/me", uh.Me)
 		userGroup.PUT("/me", uh.Update)

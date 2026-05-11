@@ -15,7 +15,6 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue/handler"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue/worker"
-	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -33,12 +32,6 @@ func NewApp() *Application {
 	InitMySQL()
 	InitRedis()
 	r := InitRouter()
-
-	r.Use(
-		m.Logger(),
-		gin.Recovery(),
-		m.ErrorHandler(),
-	)
 
 	return &Application{
 		Config: cfg,

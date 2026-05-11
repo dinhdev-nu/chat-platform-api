@@ -2,19 +2,16 @@ package router
 
 import (
 	h "github.com/dinhdev-nu/chat-platform-api/internal/handler"
-	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
-	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 func RegisterRoomRouters(
-	r *gin.Engine,
+	r *gin.RouterGroup,
+	rp *gin.RouterGroup,
 	rh *h.RoomHandler,
-	as *s.AuthService,
 ) {
-	r.Use(m.AuthMiddleware(as))
 
-	conv := r.Group("/conversations")
+	conv := rp.Group("/conversations")
 	{
 		conv.POST("/direct", rh.CreateDM)
 		conv.POST("/group", rh.CreateGroup)

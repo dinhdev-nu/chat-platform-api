@@ -17,9 +17,9 @@ type roomRepo struct {
 	db *sql.DB
 }
 
-func NewRoomRepository(q *sqlc.Queries, db *sql.DB) r.RoomRepository {
+func NewRoomRepository(db *sql.DB) r.RoomRepository {
 	return &roomRepo{
-		q:  q,
+		q:  sqlc.New(db),
 		db: db,
 	}
 }

@@ -1,6 +1,7 @@
 package gorm
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func NewDB(cfg config.MySQLConfig, isProd bool) (*gorm.DB, error) {
+func NewDB(cfg config.MySQLConfig, isProd bool) (*gorm.DB, *sql.DB, error) {
 	dsn := cfg.BuildDSN()
 
 	logLevel := logger.Info
@@ -26,19 +27,19 @@ func NewDB(cfg config.MySQLConfig, isProd bool) (*gorm.DB, error) {
 		SkipDefaultTransaction:                   true,  // Tắt transaction mặc định để tăng hiệu suất
 	})
 	if err != nil {
-		return nil, fmt.Errorf("gorm open error: %w", err)
+		return nil, nil, fmt.Errorf("gorm open error: %w", err)
 	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
-		return nil, fmt.Errorf("gorm get sql db error: %w", err)
+		return nil, nil, fmt.Errorf("gorm get sql db error: %w", err)
 	}
 
 	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 	sqlDB.SetConnMaxLifetime(time.Duration(cfg.MaxLifetime) * time.Second)
 
-	return db, nil
+	return db, sqlDB, nil
 }
 
 func RunMigrations(db *gorm.DB) error {

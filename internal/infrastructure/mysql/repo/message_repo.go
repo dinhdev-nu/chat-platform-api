@@ -16,8 +16,8 @@ type messageRepo struct {
 	db *sql.DB
 }
 
-func NewMessageRepo(q *sqlc.Queries, db *sql.DB) r.MessageRepository {
-	return &messageRepo{q: q, db: db}
+func NewMessageRepository(db *sql.DB) r.MessageRepository {
+	return &messageRepo{q: sqlc.New(db), db: db}
 }
 
 func (r *messageRepo) DeleteMessageReaction(ctx context.Context, msgID, userID []byte, emoji string) error {

@@ -17,7 +17,7 @@ const (
 	ContextJTIKey  string = "jti"
 )
 
-func AuthMiddleware(authService *s.AuthService) gin.HandlerFunc {
+func AuthMiddleware(as *s.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractTokenFromHeader(c)
 		if token == "" {
@@ -26,7 +26,7 @@ func AuthMiddleware(authService *s.AuthService) gin.HandlerFunc {
 			return
 		}
 
-		user, jti, err := authService.ValidateToken(c.Request.Context(), token)
+		user, jti, err := as.ValidateToken(c.Request.Context(), token)
 		if err != nil {
 			_ = c.Error(err)
 			c.Abort()
