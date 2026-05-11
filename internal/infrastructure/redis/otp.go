@@ -18,8 +18,6 @@ const (
 	otpMaxAttempts time.Duration = 15 * time.Minute
 	otpLockTTL     time.Duration = 15 * time.Minute
 	otpResendTTL   time.Duration = 1 * time.Minute
-
-	maxOTPAttempts = 5
 )
 
 type OTPStore struct {

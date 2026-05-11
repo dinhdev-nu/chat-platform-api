@@ -25,12 +25,9 @@ type Meta struct {
 }
 
 type Pagination struct {
-	Page       int  `json:"page"`
-	Limit      int  `json:"limit"`
-	Total      int  `json:"total"`
-	TotalPages int  `json:"totalPages"`
-	HasNext    bool `json:"hasNext"`
-	HasPrev    bool `json:"hasPrev"`
+	Limit      int    `json:"limit"`
+	HasMore    bool   `json:"hasNext"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 func OK[T any](c *gin.Context, data *T, message string) {
@@ -73,16 +70,4 @@ func Error(c *gin.Context, err *errors.AppError) {
 			Message: err.Message,
 		},
 	})
-}
-
-func NewPagination(page, limit, total int) *Pagination {
-	totalPages := (total + limit - 1) / limit // Calculate total pages
-	return &Pagination{
-		Page:       page,
-		Limit:      limit,
-		Total:      total,
-		TotalPages: totalPages,
-		HasNext:    page < totalPages,
-		HasPrev:    page > 1,
-	}
 }

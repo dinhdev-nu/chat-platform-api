@@ -121,7 +121,6 @@ func (s *StreamStore) AckJob(ctx context.Context, stream, group, id string) erro
 func (s *StreamStore) RetryJob(ctx context.Context, stream string, msg StreamMessage, backoff time.Duration) error {
 	msg.Job.Attempt++
 	msg.Job.RetryAt = time.Now().Add(backoff)
-	msg.ID = "" // Khi re-enqueue, ID sẽ được tạo mới, nên reset ID cũ
 
 	data, err := json.Marshal(msg.Job)
 	if err != nil {

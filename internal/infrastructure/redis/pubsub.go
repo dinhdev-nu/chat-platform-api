@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	notifyChannel = "notify:%s" // s = user ID
+	notifyChannel = "notify:%s" // s = conversation ID
 
 	typingKey = "typing:%s:%s" // s = conversation ID, user ID
 	typingTTL = 3 * time.Second
@@ -22,8 +22,23 @@ const (
 	seqKey = "seq:%s" // s = conversation ID
 )
 
+type EventType string
+
+const (
+	EventConvCreated   EventType = "conv.created"
+	EventMemberAdded   EventType = "member.added"
+	EventMemberRemoved EventType = "member.removed"
+
+	EventNewMessage  EventType = "message.new"
+	EventReadMessage EventType = "message.read"
+	EventEditMessage EventType = "message.edit"
+	EventDelMessage  EventType = "message.del"
+
+	EventToggleReaction EventType = "reaction.toggle"
+)
+
 type Event struct {
-	Type    string
+	Type    EventType
 	ConvID  string
 	Payload json.RawMessage
 }
@@ -135,4 +150,12 @@ func (b *PubSubBroker) InitSeq(ctx context.Context, convID []byte, seq int64) er
 func (b *PubSubBroker) DeleteSeq(ctx context.Context, convID []byte) error {
 	key := fmt.Sprintf(seqKey, hex.EncodeToString(convID))
 	return b.client.Del(ctx, key).Err()
+}
+
+func (b *PubSubBroker) ToJsonRawMessage(payload map[string]any) (json.RawMessage, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(data), nil
 }

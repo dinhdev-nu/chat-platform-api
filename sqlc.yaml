@@ -1,20 +1,26 @@
 version: "2"
 sql:
-  - engine:  "mysql"
+  - engine: "mysql"
     queries: "./internal/infrastructure/mysql/query"
-    schema:  "./internal/infrastructure/mysql/migration"
+    schema:  "./internal/infrastructure/mysql/migrations"
     gen:
       go:
-        package:               "sqlc"
-        out:                   "./internal/infrastructure/mysql/sqlc"
-        emit_prepared_queries: true
-        emit_json_tags:        true
-        emit_interfaces:       true
-        emit_empty_slices:     true
-        emit_pointers_for_null_types: true
-        query_parameter_limit: 4
-        ## emit_enum_validations: true
-        ## overrides:
-        ## - db_type: "datetime"
-        ##   go_type: "time.Time"
-
+        package:                      "sqlc"
+        out:                          "./internal/infrastructure/mysql/sqlc"
+        emit_json_tags:               false  # dùng DTO riêng, tránh leak DB layer
+        emit_interface:               true   # mock trong unit test
+        emit_exact_table_names:       false  # Message thay vì Messages
+        emit_empty_slices:            true   # JSON [] thay vì null
+        emit_pointers_for_null_types: true   # *time.Time, *string thay vì sql.NullXXX
+        overrides:
+          - db_type: "datetime"
+            nullable: true
+            go_type:
+              import:  "time"
+              type:    "Time"
+              pointer: true
+          - db_type: "binary(16)" # or "bytea", etc.
+            go_type: 
+              type: "byte"
+              slice: true
+            
