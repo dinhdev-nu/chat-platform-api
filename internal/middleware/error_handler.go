@@ -28,6 +28,7 @@ func ErrorHandler() gin.HandlerFunc {
 			}
 
 			response.Error(c, appErr)
+			return
 		}
 
 		global.Logger.Error("Unknown error", zap.Error(err))
