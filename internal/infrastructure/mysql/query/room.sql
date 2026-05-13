@@ -84,3 +84,9 @@ WHERE conversation_id = ?;
 UPDATE conversations
 SET last_message_id = ?, last_activity_at = NOW(3), updated_at = NOW(3)
 WHERE id = ?;
+
+-- name: GetUserConversationIDs :many
+-- Dùng khi WS connect: load toàn bộ conv user đang tham gia.
+SELECT conversation_id
+FROM conversation_members
+WHERE user_id = ?;

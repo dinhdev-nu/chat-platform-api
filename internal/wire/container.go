@@ -17,7 +17,7 @@ type Container struct {
 
 func NewContainer() *Container {
 
-	// providers
+	// infrastructure
 	jwt := provider.NewJWTManager()
 	mailQueue := provider.NewSendEmailQueueHandler()
 	roomViewer := provider.NewRoomViewer()

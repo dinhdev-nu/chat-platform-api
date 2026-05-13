@@ -4,6 +4,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue/handler"
+	"github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
 )
@@ -16,6 +17,6 @@ func NewSendEmailQueueHandler() queue.Handler {
 	return handler.NewSendEmailHandler(global.Mailer, global.Logger, global.Config.Mail.SenderName)
 }
 
-func NewRoomViewer() websocket.RoomViewer {
-	return websocket.NewRoomViewer()
+func NewRoomViewer() service.RoomViewer {
+	return websocket.NewRoomManager()
 }

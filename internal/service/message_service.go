@@ -18,7 +18,6 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
-	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
@@ -28,10 +27,10 @@ type MessageService struct {
 	roomRepo r.RoomRepository
 	msgRepo  r.MessageRepository
 
-	roomViewer websocket.RoomViewer
+	roomViewer RoomViewer
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv websocket.RoomViewer) *MessageService {
+func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv RoomViewer) *MessageService {
 	return &MessageService{
 		roomRepo:   rr,
 		msgRepo:    mg,

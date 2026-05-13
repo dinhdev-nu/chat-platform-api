@@ -177,6 +177,36 @@ func (q *Queries) GetMemberRole(ctx context.Context, arg GetMemberRoleParams) (i
 	return role, err
 }
 
+const getUserConversationIDs = `-- name: GetUserConversationIDs :many
+SELECT conversation_id
+FROM conversation_members
+WHERE user_id = ?
+`
+
+// Dùng khi WS connect: load toàn bộ conv user đang tham gia.
+func (q *Queries) GetUserConversationIDs(ctx context.Context, userID []byte) ([][]byte, error) {
+	rows, err := q.db.QueryContext(ctx, getUserConversationIDs, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]byte{}
+	for rows.Next() {
+		var conversation_id []byte
+		if err := rows.Scan(&conversation_id); err != nil {
+			return nil, err
+		}
+		items = append(items, conversation_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertConversationMember = `-- name: InsertConversationMember :exec
 INSERT IGNORE INTO conversation_members (conversation_id, user_id, role)
 VALUES (?, ?, ?)

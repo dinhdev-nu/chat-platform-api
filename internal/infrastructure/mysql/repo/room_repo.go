@@ -24,6 +24,14 @@ func NewRoomRepository(db *sql.DB) r.RoomRepository {
 	}
 }
 
+func (r *roomRepo) GetUserConversationIDs(ctx context.Context, userID []byte) ([][]byte, error) {
+	rows, err := r.q.GetUserConversationIDs(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("roomRepo.GetUserConversationIDs: %w", err)
+	}
+	return rows, nil
+}
+
 func (r *roomRepo) UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error {
 	err := r.q.UpdateLastReadAt(ctx, sqlc.UpdateLastReadAtParams{
 		ConversationID: convID,

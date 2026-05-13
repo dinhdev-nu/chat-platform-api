@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	gormmodel "github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/mysql/gorm/model"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
@@ -54,6 +55,14 @@ func (r *userRepo) Update(ctx context.Context, user *model.User, userID []byte) 
 	if err := r.db.WithContext(ctx).
 		Model(&gormmodel.User{}).Where("id = ?", userID).Updates(&g).Error; err != nil {
 		return fmt.Errorf("userRepo.Update: %w", err)
+	}
+	return nil
+}
+
+func (r *userRepo) UpdateLastSeenAt(ctx context.Context, userID []byte) error {
+	if err := r.db.WithContext(ctx).
+		Model(&gormmodel.User{}).Where("id = ?", userID).Update("last_seen_at", time.Now()).Error; err != nil {
+		return fmt.Errorf("userRepo.UpdateLastSeenAt: %w", err)
 	}
 	return nil
 }

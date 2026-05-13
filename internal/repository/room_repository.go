@@ -13,6 +13,7 @@ type RoomRepository interface {
 	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
 	GetConversationMember(ctx context.Context, convID, userID []byte) (*model.ConversationMember, error)
 	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
+	GetUserConversationIDs(ctx context.Context, userID []byte) ([][]byte, error)
 	CreateConversation(ctx context.Context, conv *model.Conversation) error
 
 	InsertConversationMember(ctx context.Context, memb *model.ConversationMember) error

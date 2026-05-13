@@ -11,6 +11,7 @@ type UserRepository interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	Create(ctx context.Context, user *model.User) error
 	Update(ctx context.Context, user *model.User, userID []byte) error
+	UpdateLastSeenAt(ctx context.Context, userID []byte) error
 }
 
 type UserTokenRepository interface {

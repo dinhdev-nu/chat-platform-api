@@ -27,6 +27,8 @@ type Querier interface {
 	GetMessageCursorTS(ctx context.Context, arg GetMessageCursorTSParams) (time.Time, error)
 	GetReactionsByMessageIDs(ctx context.Context, messageIds [][]byte) ([]MessageReaction, error)
 	GetUnreadCountByWatermark(ctx context.Context, arg GetUnreadCountByWatermarkParams) (int64, error)
+	// Dùng khi WS connect: load toàn bộ conv user đang tham gia.
+	GetUserConversationIDs(ctx context.Context, userID []byte) ([][]byte, error)
 	InsertAttachment(ctx context.Context, arg InsertAttachmentParams) error
 	// INSERT IGNORE: user đã là member → bỏ qua, không lỗi.
 	InsertConversationMember(ctx context.Context, arg InsertConversationMemberParams) error

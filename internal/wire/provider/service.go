@@ -4,7 +4,6 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
-	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
 )
 
@@ -25,6 +24,6 @@ func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageReposi
 	return s.NewRoomService(ur, rr, mr)
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv websocket.RoomViewer) *s.MessageService {
+func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv s.RoomViewer) *s.MessageService {
 	return s.NewMessageService(rr, mg, rv)
 }
