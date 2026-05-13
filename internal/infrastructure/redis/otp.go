@@ -36,7 +36,7 @@ func (o *OTPStore) Set(ctx context.Context, email, code string) error {
 func (o *OTPStore) Get(ctx context.Context, email string) (string, error) {
 	key := fmt.Sprintf(otpKey, email)
 	val, err := o.client.Get(ctx, key).Result()
-	if err != nil {
+	if err != nil && err != redis.Nil {
 		return "", err
 	}
 	return val, nil

@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"fmt"
+
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	r "github.com/dinhdev-nu/chat-platform-api/pkg/response"
+	"github.com/ua-parser/uap-go/uaparser"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +42,7 @@ func (h *AuthHandler) VerifyOTP(c *gin.Context) {
 		_ = c.Error(ar.ValidationError(err.Error()))
 		return
 	}
+	req.DeviceName = h.getDeviceName(c)
 
 	res, err := h.authService.VerifyOTP(c.Request.Context(), req, c.ClientIP())
 	if err != nil {
@@ -64,13 +68,18 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	r.NoContent(c)
 }
 
-func (h *AuthHandler) Me(c *gin.Context) {
-	user, exists := m.GetCurrentUser(c)
-	if !exists {
-		_ = c.Error(ar.Unauthorized("Unauthorized"))
-		return
+func (h *AuthHandler) getDeviceName(c *gin.Context) string {
+	ag := c.GetHeader("User-Agent")
+	if ag == "" {
+		return "Unknown Device"
 	}
 
-	res := user.ToUserResponse()
-	r.OK(c, &res, "User info retrieved successfully")
+	client := uaparser.NewFromSaved().Parse(ag)
+
+	device := client.Device.Family
+	if device == "Other" {
+		device = "PC"
+	}
+
+	return fmt.Sprintf("%s, %s (%s)", device, client.Os.Family, client.UserAgent.Family)
 }
