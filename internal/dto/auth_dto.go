@@ -16,7 +16,6 @@ type VerifyOTPRequest struct {
 	Email      string `json:"email" binding:"required,email,max=255"`
 	OTP        string `json:"otp" binding:"required,len=6,numeric"`
 	DeviceID   string `json:"deviceId" binding:"required,uuid"`
-	IPAddress  string `json:"ipAddress" binding:"required,ip"`
 	DeviceName string `json:"deviceName" binding:"omitempty,max=255"`
 }
 

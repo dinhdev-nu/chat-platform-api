@@ -30,6 +30,10 @@ func (h *SendEmailHandler) Type() string {
 }
 
 func (h *SendEmailHandler) Handle(ctx context.Context, job queue.Job) error {
+	if h == nil || h.mailer == nil {
+		return fmt.Errorf("send_email: handler is nil")
+	}
+
 	var payload queue.SendOTPEmailPayload
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
 		h.logger.Error("send_email: invalid payload", zap.String("jobID", job.ID), zap.Error(err))

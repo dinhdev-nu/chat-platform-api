@@ -31,6 +31,7 @@ func NewApp() *Application {
 	InitLogger()
 	InitMySQL()
 	InitRedis()
+	InitMailer()
 	r := InitRouter()
 
 	return &Application{
