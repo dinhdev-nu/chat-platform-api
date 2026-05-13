@@ -11,11 +11,13 @@ import (
 
 func New(mode string, cfg c.LoggerConfig) *zap.Logger {
 	level := parseLogLevel(cfg.Level)
-	encoder := buildEncoder(mode)
+
+	consoleEncoder := buildConsoleEncoder(mode)
+	fileEncoder := buildFileEncoder(mode)
 
 	cores := []zapcore.Core{
-		consoleCore(encoder, level),   // write to console
-		fileCore(encoder, level, cfg), // write to file with rotation
+		consoleCore(consoleEncoder, level), // write to console
+		fileCore(fileEncoder, level, cfg),  // write to file with rotation
 	}
 
 	core := zapcore.NewTee(cores...)
@@ -43,7 +45,7 @@ func consoleCore(enc zapcore.Encoder, level zapcore.Level) zapcore.Core {
 	return zapcore.NewCore(enc, zapcore.AddSync(zapcore.AddSync(os.Stdout)), level)
 }
 
-func buildEncoder(mode string) zapcore.Encoder {
+func buildConsoleEncoder(mode string) zapcore.Encoder {
 	cfg := zapcore.EncoderConfig{
 		TimeKey:        "time",
 		LevelKey:       "level",
@@ -60,6 +62,27 @@ func buildEncoder(mode string) zapcore.Encoder {
 
 	if mode == "production" {
 		cfg.EncodeLevel = zapcore.CapitalLevelEncoder
+		return zapcore.NewJSONEncoder(cfg)
+	}
+	return zapcore.NewConsoleEncoder(cfg)
+}
+
+func buildFileEncoder(mode string) zapcore.Encoder {
+	cfg := zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+	}
+
+	if mode == "production" {
 		return zapcore.NewJSONEncoder(cfg)
 	}
 	return zapcore.NewConsoleEncoder(cfg)
