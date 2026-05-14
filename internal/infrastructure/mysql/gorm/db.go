@@ -47,6 +47,7 @@ func RunMigrations(db *gorm.DB) error {
 		&m.User{},
 		&m.OAuthAccount{},
 		&m.UserToken{},
+		&m.UserContact{},
 	); err != nil {
 		return fmt.Errorf("gorm auto migrate error: %w", err)
 	}

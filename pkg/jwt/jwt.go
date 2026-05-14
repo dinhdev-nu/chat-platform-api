@@ -22,12 +22,12 @@ func NewJWTManager(cfg *config.JwtConfig) *JWTManager {
 type Claims struct {
 	gojwt.RegisteredClaims
 	UserID   string `json:"uid"`
-	DiviceID string `json:"did"`
+	DeviceID string `json:"did"`
 }
 
 type GenerateTokenParams struct {
 	UserID   []byte
-	DiviceID []byte
+	DeviceID []byte
 	JTI      []byte
 }
 
@@ -52,7 +52,7 @@ func (m *JWTManager) GenerateToken(params GenerateTokenParams) (*GenerateTokenRe
 			ExpiresAt: gojwt.NewNumericDate(expiresAt),
 		},
 		UserID:   hex.EncodeToString(params.UserID),
-		DiviceID: hex.EncodeToString(params.DiviceID),
+		DeviceID: hex.EncodeToString(params.DeviceID),
 	}
 
 	token := gojwt.NewWithClaims(gojwt.SigningMethodHS256, claims)
@@ -70,7 +70,7 @@ func (m *JWTManager) GenerateToken(params GenerateTokenParams) (*GenerateTokenRe
 
 func (m *JWTManager) ParseToken(tokenStr string) (*Claims, error) {
 	token, err := gojwt.ParseWithClaims(
-		tokenStr, Claims{},
+		tokenStr, &Claims{},
 		func(token *gojwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*gojwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])

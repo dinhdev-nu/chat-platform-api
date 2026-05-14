@@ -12,6 +12,16 @@ type UserRepository interface {
 	Create(ctx context.Context, user *model.User) error
 	Update(ctx context.Context, user *model.User, userID []byte) error
 	UpdateLastSeenAt(ctx context.Context, userID []byte) error
+
+	SearchUsers(ctx context.Context, curUID []byte, q string, cursor *string, limit int) ([]*model.SearchUser, error)
+	CheckUserExists(ctx context.Context, id []byte) (bool, error)
+
+	GetContactPair(ctx context.Context, uid1, uid2 []byte) ([]*model.UserContact, error)
+	UpdateContactStatus(ctx context.Context, contactID uint64, status model.ContactStatus) (int64, error)
+	CreateContactRequest(ctx context.Context, userID, contactID []byte) error
+	GetContactRecord(ctx context.Context, userID, contactID []byte) (*model.UserContact, error)
+	GetAcceptedContacts(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
+	GetIncomingRequests(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
 }
 
 type UserTokenRepository interface {

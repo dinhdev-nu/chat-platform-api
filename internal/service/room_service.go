@@ -28,9 +28,9 @@ type RoomService struct {
 }
 
 type ResultPage[T any] struct {
-	Items      []T
-	NextCursor *string
-	HasMore    bool
+	Items      []T     `json:"items"`
+	NextCursor *string `json:"nextCursor"`
+	HasMore    bool    `json:"hasMore"`
 }
 
 func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageRepository) *RoomService {

@@ -15,14 +15,10 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
-	gored "github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
 const (
-	cacheUserStatus    = "user:%s" // s = userID
-	cacheUserStatusTTL = 10 * time.Minute
-
 	maxDevicesPerUser = 5
 )
 
@@ -172,7 +168,7 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 
 	token, err := s.jwtManager.GenerateToken(jwt.GenerateTokenParams{
 		UserID:   user.ID,
-		DiviceID: deviceID,
+		DeviceID: deviceID,
 		JTI:      jti,
 	})
 	if err != nil {
@@ -243,11 +239,11 @@ func (s *AuthService) Logout(ctx context.Context, jti []byte) error {
 func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*model.User, []byte, error) {
 	claims, err := s.jwtManager.ParseToken(tokenStr)
 	if err != nil {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+		return nil, nil, ar.New(ar.ErrTokenInvalid, err.Error())
 	}
 	jti, err := claims.JTIBytes()
 	if err != nil {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 2")
 	}
 
 	hexUserID, err := g.Session.Get(ctx, jti)
@@ -260,7 +256,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		// HIT
 		userID, err = crypto.ParseHexToBytes(hexUserID)
 		if err != nil {
-			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 3")
 		}
 	} else {
 		// MISS
@@ -269,7 +265,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 			return nil, nil, ar.Internal(err)
 		}
 		if tokenDB == nil {
-			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 4")
 		}
 		userID = tokenDB.UserID
 
@@ -278,12 +274,12 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		g.Session.Set(ctx, jti, userID, ttl)
 	}
 
-	cKey := fmt.Sprintf(cacheUserStatus, string(userID))
-	cached, err := g.RedisClient.Get(ctx, cKey).Result()
-	if err != nil && err != gored.Nil {
+	// Kiểm tra user status từ cache để có thể revoke token ngay khi user bị suspend/deactivate
+	cached, err := g.Session.GetUser(ctx, userID)
+	if err != nil {
 		return nil, nil, ar.Internal(err)
 	}
-	if err == gored.Nil || cached == "" {
+	if cached == "" {
 		userDB, err := s.userRepo.FindByID(ctx, userID)
 		if err != nil {
 			return nil, nil, ar.Internal(err)
@@ -299,7 +295,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		cached = string(userJson)
 
 		// warm up cache
-		if err := g.RedisClient.Set(ctx, cKey, userDB.Status, cacheUserStatusTTL).Err(); err != nil {
+		if err := g.Session.WarmUser(ctx, userID, cached); err != nil {
 			g.Logger.Warn("Failed to cache user status", zap.Error(err))
 		}
 	}
@@ -313,12 +309,14 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		return nil, nil, ar.New(ar.ErrForbidden, "User account is not active")
 	}
 
-	go func() {
-		bgCtx := context.Background()
-		s.tokenRepo.UpdateLastUsed(bgCtx, jti)
-	}()
+	if user.LastSeenAt == nil || user.LastSeenAt.Before(time.Now().Add(-10*time.Minute)) {
+		go func() {
+			bgCtx := context.Background()
+			s.tokenRepo.UpdateLastUsed(bgCtx, jti)
+		}()
+	}
 
-	return &user, nil, nil
+	return &user, jti, nil
 }
 
 func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string) (*model.User, error) {

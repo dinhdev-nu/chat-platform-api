@@ -58,6 +58,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		_ = c.Error(ar.Unauthorized("Unauthorized"))
 		return
 	}
+	fmt.Printf("Logout request with JTI: %s\n", jti)
 
 	err := h.authService.Logout(c.Request.Context(), jti)
 	if err != nil {

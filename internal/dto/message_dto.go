@@ -25,5 +25,5 @@ type AttachmentRequest struct {
 }
 
 type MarkAsReadRequest struct {
-	LastReadMsgID []byte `json:"last_read_msg_id" validate:"required,len=32"`
+	LastReadMsgID []byte `json:"last_read_msg_id" binding:"required,len=32"`
 }

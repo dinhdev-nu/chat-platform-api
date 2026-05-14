@@ -10,9 +10,22 @@ func RegisterUserRoutes(
 	rp *gin.RouterGroup,
 	uh *h.UserHandler,
 ) {
-	userGroup := rp.Group("/user")
+	user := rp.Group("/users")
 	{
-		userGroup.GET("/me", uh.Me)
-		userGroup.PUT("/me", uh.Update)
+		user.GET("/me", uh.Me)
+		user.PUT("/me", uh.Update)
+		user.GET("/search", uh.Search)
+	}
+
+	requests := rp.Group("/contacts/requests")
+	{
+		requests.POST("", uh.SendContactRequest)
+		requests.GET("/incoming", uh.GetIncomingRequests)
+		requests.PUT("/accept", uh.AcceptContactRequest)
+	}
+
+	contacts := rp.Group("/contacts")
+	{
+		contacts.GET("", uh.GetContacts)
 	}
 }
