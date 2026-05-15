@@ -232,7 +232,7 @@ func appendConv(id []byte, cType int8, name, avatar sql.NullString, lastMsgID sq
 
 func ByteToNullString(val []byte) sql.NullString {
 	return sql.NullString{
-		String: fmt.Sprintf("%x", val),
+		String: string(val),
 		Valid:  len(val) > 0,
 	}
 }

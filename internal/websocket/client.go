@@ -225,7 +225,7 @@ func (c *Client) onViewing(payload json.RawMessage) {
 	if err != nil {
 		return
 	}
-	c.rm.SetViewing(c.uid, cid)
+	c.rm.SetViewing(cid, c.uid)
 }
 
 func (c *Client) onLeft(payload json.RawMessage) {

@@ -147,7 +147,7 @@ func (h *UserHandler) GetContacts(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	r.Paginated(c, res, &r.Pagination{
+	r.Paginated(c, &res.Items, &r.Pagination{
 		NextCursor: *res.NextCursor,
 		HasMore:    res.HasMore,
 		Limit:      limit,

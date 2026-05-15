@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
@@ -33,7 +32,6 @@ func AuthMiddleware(as *s.AuthService) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		fmt.Printf("Authenticated user: %s with JTI: %s\n", user.ID, jti)
 
 		c.Set(ContextUserKey, user)
 		c.Set(ContextJTIKey, jti)

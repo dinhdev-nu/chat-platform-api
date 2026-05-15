@@ -2,7 +2,6 @@ package sqlc
 
 import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
-	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 )
 
 func (c Conversation) ToDomain() *model.Conversation {
@@ -23,12 +22,10 @@ func (c Conversation) ToDomain() *model.Conversation {
 		cm.Description = &c.Description.String
 	}
 	if c.CreatedBy.Valid {
-		cb, _ := crypto.ParseHexToBytes(c.CreatedBy.String)
-		cm.CreatedBy = cb
+		cm.CreatedBy = []byte(c.CreatedBy.String)
 	}
 	if c.LastMessageID.Valid {
-		lmid, _ := crypto.ParseHexToBytes(c.LastMessageID.String)
-		cm.LastMessageID = lmid
+		cm.LastMessageID = []byte(c.LastMessageID.String)
 	}
 
 	return cm
@@ -67,8 +64,7 @@ func (m Message) ToDomain() *model.Message {
 		msg.Iv = &m.Iv.String
 	}
 	if m.ParentID.Valid {
-		pid, _ := crypto.ParseHexToBytes(m.ParentID.String)
-		msg.ParentID = pid
+		msg.ParentID = []byte(m.ParentID.String)
 	}
 	return msg
 }
