@@ -144,9 +144,12 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 
 func (r *roomRepo) CreateConversation(ctx context.Context, conv *model.Conversation) error {
 	err := r.q.CreateConversation(ctx, sqlc.CreateConversationParams{
-		ID:        conv.ID,
-		Type:      int8(conv.Type),
-		CreatedBy: ByteToNullString(conv.CreatedBy),
+		ID:          conv.ID,
+		Type:        int8(conv.Type),
+		Name:        StringPtrToNullString(conv.Name),
+		AvatarUrl:   StringPtrToNullString(conv.AvatarURL),
+		Description: StringPtrToNullString(conv.Description),
+		CreatedBy:   ByteToNullString(conv.CreatedBy),
 	})
 	if err != nil {
 		return fmt.Errorf("roomRepo.CreateConversation: %w", err)
@@ -234,6 +237,16 @@ func ByteToNullString(val []byte) sql.NullString {
 	return sql.NullString{
 		String: string(val),
 		Valid:  len(val) > 0,
+	}
+}
+
+func StringPtrToNullString(val *string) sql.NullString {
+	if val == nil {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{
+		String: *val,
+		Valid:  true,
 	}
 }
 

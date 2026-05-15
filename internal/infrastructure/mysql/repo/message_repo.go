@@ -55,7 +55,7 @@ func (r *messageRepo) SoftDeleteMessage(ctx context.Context, id []byte) error {
 func (r *messageRepo) UpdateMessageContent(ctx context.Context, arg *model.Message) (int64, error) {
 	result, err := r.q.UpdateMessageContent(ctx, sqlc.UpdateMessageContentParams{
 		ID:       arg.ID,
-		Content:  stringToNullString(*arg.Content),
+		Content:  stringPtrToNullString(arg.Content),
 		SenderID: arg.SenderID,
 	})
 	if err != nil {
@@ -163,9 +163,9 @@ func (r *messageRepo) InsertAttachment(ctx context.Context, att *model.Attachmen
 		FileUrl:       att.FileURL,
 		MimeType:      att.MimeType,
 		FileSizeBytes: uint64(att.FileSizeBytes),
-		Width:         intToNullInt32(*att.Width),
-		Height:        intToNullInt32(*att.Height),
-		DurationSec:   intToNullInt16(*att.DurationSec),
+		Width:         intPtrToNullInt32(att.Width),
+		Height:        intPtrToNullInt32(att.Height),
+		DurationSec:   intPtrToNullInt16(att.DurationSec),
 	})
 	if err != nil {
 		return fmt.Errorf("messageRepo.InsertAttachment: %w", err)
@@ -183,9 +183,9 @@ func (r *messageRepo) BatchInsertAttachments(ctx context.Context, args []*model.
 			FileUrl:       att.FileURL,
 			MimeType:      att.MimeType,
 			FileSizeBytes: uint64(att.FileSizeBytes),
-			Width:         intToNullInt32(*att.Width),
-			Height:        intToNullInt32(*att.Height),
-			DurationSec:   intToNullInt16(*att.DurationSec),
+			Width:         intPtrToNullInt32(att.Width),
+			Height:        intPtrToNullInt32(att.Height),
+			DurationSec:   intPtrToNullInt16(att.DurationSec),
 		}
 	}
 	return r.q.BatchInsertAttachments(ctx, sqlArgs)
@@ -198,9 +198,9 @@ func (r *messageRepo) InsertMessage(ctx context.Context, msg *model.Message) err
 		SenderID:         msg.SenderID,
 		ParentID:         ByteToNullString(msg.ParentID),
 		Type:             int8(msg.Type),
-		Content:          stringToNullString(*msg.Content),
+		Content:          stringPtrToNullString(msg.Content),
 		ContentEncrypted: msg.ContentEncrypted,
-		Iv:               stringToNullString(*msg.Iv),
+		Iv:               stringPtrToNullString(msg.Iv),
 		Seq:              msg.Seq,
 	})
 	if err != nil {
@@ -214,7 +214,7 @@ func (r *messageRepo) InsertSystemMessage(ctx context.Context, msg *model.Messag
 		ID:             msg.ID,
 		ConversationID: msg.ConversationID,
 		SenderID:       msg.SenderID,
-		Content:        stringToNullString(*msg.Content),
+		Content:        stringPtrToNullString(msg.Content),
 		Seq:            msg.Seq,
 	})
 	if err != nil {
@@ -231,23 +231,23 @@ func (r *messageRepo) GetMaxSeq(ctx context.Context, convID []byte) (int64, erro
 	return seq, nil
 }
 
-func stringToNullString(s string) sql.NullString {
-	if s == "" {
+func stringPtrToNullString(s *string) sql.NullString {
+	if s == nil || *s == "" {
 		return sql.NullString{Valid: false}
 	}
-	return sql.NullString{String: s, Valid: true}
+	return sql.NullString{String: *s, Valid: true}
 }
 
-func intToNullInt32(i int) sql.NullInt32 {
-	if i == 0 {
+func intPtrToNullInt32(i *int) sql.NullInt32 {
+	if i == nil || *i == 0 {
 		return sql.NullInt32{Valid: false}
 	}
-	return sql.NullInt32{Int32: int32(i), Valid: true}
+	return sql.NullInt32{Int32: int32(*i), Valid: true}
 }
 
-func intToNullInt16(i int) sql.NullInt16 {
-	if i == 0 {
+func intPtrToNullInt16(i *int) sql.NullInt16 {
+	if i == nil || *i == 0 {
 		return sql.NullInt16{Valid: false}
 	}
-	return sql.NullInt16{Int16: int16(i), Valid: true}
+	return sql.NullInt16{Int16: int16(*i), Valid: true}
 }

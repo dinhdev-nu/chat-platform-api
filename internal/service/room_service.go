@@ -182,13 +182,13 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 		}
 	}()
 
-	// Push notification
-	convHex := hex.EncodeToString(convID)
-	_ = g.PubSub.Publish(ctx, convID, redis.Event{
-		Type:    redis.EventConvCreated,
-		ConvID:  convHex,
-		Payload: json.RawMessage(`{"event":"conv.created","conv_id":"` + convHex + `"}`),
-	})
+	// // Push notification
+	// convHex := hex.EncodeToString(convID)
+	// _ = g.PubSub.Publish(ctx, convID, redis.Event{
+	// 	Type:    redis.EventConvCreated,
+	// 	ConvID:  convHex,
+	// 	Payload: json.RawMessage(`{"event":"conv.created","conv_id":"` + convHex + `"}`),
+	// })
 
 	conv, err := s.roomRepo.GetConversationByID(ctx, convID)
 	if err != nil {
