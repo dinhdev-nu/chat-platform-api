@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"encoding/hex"
 	"strconv"
+	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
+	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
@@ -37,10 +40,12 @@ func (h *RoomHandler) CreateDM(c *gin.Context) {
 		return
 	}
 	if exists {
-		r.OK(c, conv, "DM conversation already exists")
+		res := convToCreateDTO(conv)
+		r.OK(c, &res, "DM conversation already exists")
 		return
 	}
-	r.Created(c, conv, "DM conversation created successfully")
+	res := convToCreateDTO(conv)
+	r.Created(c, &res, "DM conversation created successfully")
 }
 
 func (h *RoomHandler) CreateGroup(c *gin.Context) {
@@ -59,7 +64,8 @@ func (h *RoomHandler) CreateGroup(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	r.Created(c, conv, "Group conversation created successfully")
+	res := convToCreateDTO(conv)
+	r.Created(c, &res, "Group conversation created successfully")
 }
 
 func (h *RoomHandler) ListConversations(c *gin.Context) {
@@ -76,10 +82,21 @@ func (h *RoomHandler) ListConversations(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	r.Paginated(c, convs, &r.Pagination{
-		Limit:      limit,
+	// Map model list to DTO list
+	items := make([]dto.ConversationListItem, 0, len(convs.Items))
+	for _, row := range convs.Items {
+		items = append(items, convRowToListDTO(row))
+	}
+	paged := s.ResultPage[dto.ConversationListItem]{
+		Items:      items,
 		HasMore:    convs.HasMore,
-		NextCursor: *convs.NextCursor,
+		NextCursor: convs.NextCursor,
+	}
+
+	r.Paginated(c, &paged, &r.Pagination{
+		Limit:      limit,
+		HasMore:    paged.HasMore,
+		NextCursor: *paged.NextCursor,
 	}, "Conversations retrieved successfully")
 }
 
@@ -129,4 +146,58 @@ func (h *RoomHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 	r.NoContent(c)
+}
+
+func convToCreateDTO(c *model.Conversation) dto.CreateRoomResponse {
+	var name, desc, avatar, createdBy, lastMsg, lastAct string
+	if c.Name != nil {
+		name = *c.Name
+	}
+	if c.Description != nil {
+		desc = *c.Description
+	}
+	if c.AvatarURL != nil {
+		avatar = *c.AvatarURL
+	}
+	if len(c.CreatedBy) > 0 {
+		createdBy = hex.EncodeToString(c.CreatedBy)
+	}
+	if len(c.LastMessageID) > 0 {
+		lastMsg = hex.EncodeToString(c.LastMessageID)
+	}
+	if c.LastActivityAt != nil {
+		lastAct = c.LastActivityAt.Format(time.RFC3339)
+	}
+	return dto.CreateRoomResponse{
+		ID:             hex.EncodeToString(c.ID),
+		Type:           int8(c.Type),
+		Name:           name,
+		Description:    desc,
+		AvatarURL:      avatar,
+		CreateBy:       createdBy,
+		LastMessageID:  lastMsg,
+		LastActivityAt: lastAct,
+		CreatedAt:      c.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:      c.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func convRowToListDTO(rw *model.ConversationListRow) dto.ConversationListItem {
+	c := rw.Conversation
+	base := convToCreateDTO(&c)
+	return dto.ConversationListItem{
+		ID:             base.ID,
+		Type:           base.Type,
+		Name:           base.Name,
+		Description:    base.Description,
+		AvatarURL:      base.AvatarURL,
+		CreateBy:       base.CreateBy,
+		LastMessageID:  base.LastMessageID,
+		LastActivityAt: base.LastActivityAt,
+		CreatedAt:      base.CreatedAt,
+		UpdatedAt:      base.UpdatedAt,
+		Role:           int8(rw.Role),
+		IsMuted:        rw.IsMuted,
+		UnreadCount:    rw.UnreadCount,
+	}
 }

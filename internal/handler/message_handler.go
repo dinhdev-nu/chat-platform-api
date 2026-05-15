@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/hex"
 	"strconv"
+	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
@@ -43,15 +45,17 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 			_ = c.Error(err)
 			return
 		}
-		r.OK(c, msg, "Send msg successfully")
+		out := h.msgToDTO(msg)
+		r.OK(c, &out, "Send msg successfully")
 		return
 	}
-	msg, err := h.ms.SendMessageWithAttachment(c, convID, user.ID, req.Type, req.Content, req.ParentID, h.toAttachmentDomain(req.Attachments))
+	msgWithMeta, err := h.ms.SendMessageWithAttachment(c, convID, user.ID, req.Type, req.Content, req.ParentID, h.toAttachmentDomain(req.Attachments))
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
-	r.OK(c, msg, "Send msg with attachment successfully")
+	out := h.msgWithMetaToDTO(msgWithMeta)
+	r.OK(c, &out, "Send msg with attachment successfully")
 }
 
 func (h *MessageHandler) ListMessages(c *gin.Context) {
@@ -73,10 +77,19 @@ func (h *MessageHandler) ListMessages(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	r.Paginated(c, msgs, &r.Pagination{
+	// map to DTOs
+	items := make([]dto.MessageResponse, len(msgs.Items))
+	for i, it := range msgs.Items {
+		items[i] = h.msgWithMetaToDTO(it)
+	}
+	nextCursor := ""
+	if msgs.NextCursor != nil {
+		nextCursor = *msgs.NextCursor
+	}
+	r.Paginated(c, &items, &r.Pagination{
 		Limit:      limit,
 		HasMore:    msgs.HasMore,
-		NextCursor: *msgs.NextCursor,
+		NextCursor: nextCursor,
 	}, "List messages successfully")
 }
 
@@ -124,7 +137,8 @@ func (h *MessageHandler) EditMessage(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	r.OK(c, msg, "Message edited successfully")
+	out := h.msgToDTO(msg)
+	r.OK(c, &out, "Message edited successfully")
 }
 
 func (h *MessageHandler) DeleteMessage(c *gin.Context) {
@@ -183,4 +197,73 @@ func (h *MessageHandler) toAttachmentDomain(attachReq []dto.AttachmentRequest) [
 		}
 	}
 	return attachments
+}
+
+// --- mapping helpers (domain -> dto)
+func (h *MessageHandler) msgToDTO(m *model.Message) dto.MessageResponse {
+	var content, iv, deletedAt string
+	if m.Content != nil {
+		content = *m.Content
+	}
+	if m.Iv != nil {
+		iv = *m.Iv
+	}
+	if m.DeletedAt != nil {
+		deletedAt = m.DeletedAt.Format(time.RFC3339)
+	}
+	return dto.MessageResponse{
+		ID:             hex.EncodeToString(m.ID),
+		ConversationID: hex.EncodeToString(m.ConversationID),
+		SenderID:       hex.EncodeToString(m.SenderID),
+		ParentID: func() string {
+			if len(m.ParentID) == 0 {
+				return ""
+			}
+			return hex.EncodeToString(m.ParentID)
+		}(),
+		Type:             int8(m.Type),
+		Content:          content,
+		ContentEncrypted: m.ContentEncrypted,
+		Iv:               iv,
+		Seq:              m.Seq,
+		IsEdited:         m.IsEdited,
+		IsDeleted:        m.IsDeleted,
+		DeletedAt:        deletedAt,
+		CreatedAt:        m.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        m.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+func (h *MessageHandler) msgWithMetaToDTO(mm *model.MessageWithMeta) dto.MessageResponse {
+	base := h.msgToDTO(mm.Message)
+	// attachments
+	atts := make([]dto.AttachmentResponse, 0, len(mm.Attachments))
+	for _, a := range mm.Attachments {
+		atts = append(atts, dto.AttachmentResponse{
+			ID:            hex.EncodeToString(a.ID),
+			MessageID:     hex.EncodeToString(a.MessageID),
+			FileName:      a.Filename,
+			FileURL:       a.FileURL,
+			MimeType:      a.MimeType,
+			FileSizeBytes: a.FileSizeBytes,
+			Width:         a.Width,
+			Height:        a.Height,
+			DurationSec:   a.DurationSec,
+			CreatedAt:     a.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	// reactions
+	reacts := make([]dto.MessageReactionResponse, 0, len(mm.Reactions))
+	for _, rct := range mm.Reactions {
+		reacts = append(reacts, dto.MessageReactionResponse{
+			ID:        rct.ID,
+			MessageID: hex.EncodeToString(rct.MessageID),
+			UserID:    hex.EncodeToString(rct.UserID),
+			Emoji:     rct.Emoji,
+			CreatedAt: rct.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	base.Attachments = atts
+	base.Reactions = reacts
+	return base
 }
