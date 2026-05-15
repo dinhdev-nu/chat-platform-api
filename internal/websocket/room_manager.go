@@ -6,12 +6,13 @@ import (
 )
 
 type RoomManager struct {
-	mu      sync.RWMutex
-	viewing map[string]map[string]struct{}
+	mu sync.RWMutex
+	// viewing[userHex][convHex] = count of sessions viewing
+	viewing map[string]map[string]int
 }
 
 func NewRoomManager() *RoomManager {
-	return &RoomManager{viewing: make(map[string]map[string]struct{})}
+	return &RoomManager{viewing: make(map[string]map[string]int)}
 }
 
 func (rm *RoomManager) IsViewing(convID, userID []byte) bool {
@@ -24,8 +25,8 @@ func (rm *RoomManager) IsViewing(convID, userID []byte) bool {
 	if !ok {
 		return false
 	}
-	_, viewing := convs[cidHex]
-	return viewing
+	cnt, viewing := convs[cidHex]
+	return viewing && cnt > 0
 }
 
 func (rm *RoomManager) SetViewing(convID, userID []byte) {
@@ -36,9 +37,9 @@ func (rm *RoomManager) SetViewing(convID, userID []byte) {
 	defer rm.mu.Unlock()
 
 	if _, ok := rm.viewing[uidHex]; !ok {
-		rm.viewing[uidHex] = make(map[string]struct{})
+		rm.viewing[uidHex] = make(map[string]int)
 	}
-	rm.viewing[uidHex][cidHex] = struct{}{}
+	rm.viewing[uidHex][cidHex]++
 }
 
 func (rm *RoomManager) ClearViewing(convID, userID []byte) {
@@ -49,7 +50,13 @@ func (rm *RoomManager) ClearViewing(convID, userID []byte) {
 	defer rm.mu.Unlock()
 
 	if convs, ok := rm.viewing[uidHex]; ok {
-		delete(convs, cidHex)
+		if cnt, ok2 := convs[cidHex]; ok2 {
+			if cnt <= 1 {
+				delete(convs, cidHex)
+			} else {
+				convs[cidHex] = cnt - 1
+			}
+		}
 		if len(convs) == 0 {
 			delete(rm.viewing, uidHex)
 		}

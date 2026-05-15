@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	gorillaws "github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -26,6 +27,9 @@ const (
 type Client struct {
 	uid    []byte
 	uidHex string
+
+	ConnID    string
+	closeOnce sync.Once
 
 	conn *gorillaws.Conn
 	send chan []byte
@@ -55,6 +59,7 @@ func NewClient(
 	return &Client{
 		uid:    uid,
 		uidHex: hex.EncodeToString(uid),
+		ConnID: uuid.NewString(),
 		conn:   conn,
 		send:   make(chan []byte, sendBufferSize),
 		hub:    hub,
@@ -63,6 +68,10 @@ func NewClient(
 		log:    log,
 		convs:  convSet,
 	}
+}
+
+func (c *Client) closeSend() {
+	c.closeOnce.Do(func() { close(c.send) })
 }
 
 func (c *Client) addConv(cidHex string) {
@@ -89,8 +98,6 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.Unregister(c)
 		c.conn.Close()
-		// Cleanup presence
-		_ = c.rdb.Del(context.Background(), presenceKey(c.uidHex)).Err()
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)

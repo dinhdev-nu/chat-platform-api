@@ -14,10 +14,12 @@ import (
 
 type Hub struct {
 	clientsMu sync.RWMutex
-	clients   map[string]*Client // uid -> client
+	// uidHex -> connID -> *Client
+	clients map[string]map[string]*Client
 
 	channelsMu sync.RWMutex
-	channels   map[string]map[string]*Client // redis channel -> uid -> client
+	// channel -> uid -> present
+	channels map[string]map[string]struct{}
 
 	rdb    *redis.Client
 	pubsub *redis.PubSub
@@ -27,8 +29,8 @@ type Hub struct {
 
 func NewHub(rdb *redis.Client, rm *RoomManager, log *zap.Logger) *Hub {
 	return &Hub{
-		clients:  make(map[string]*Client),
-		channels: make(map[string]map[string]*Client),
+		clients:  make(map[string]map[string]*Client),
+		channels: make(map[string]map[string]struct{}),
 		rdb:      rdb,
 		pubsub:   rdb.Subscribe(context.Background()), // emty subscription
 		rm:       rm,
@@ -67,24 +69,27 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 	newChannels := make([]string, 0, len(client.convs)+1)
 	//client mapp
 	h.clientsMu.Lock()
-	h.clients[client.uidHex] = client
+	if _, ok := h.clients[client.uidHex]; !ok {
+		h.clients[client.uidHex] = make(map[string]*Client)
+	}
+	h.clients[client.uidHex][client.ConnID] = client
 	h.clientsMu.Unlock()
 	// channels mapp
 	h.channelsMu.Lock()
 	for _, cid := range convIDs {
 		ch := notifyChannel(cid)
 		if _, ok := h.channels[ch]; !ok {
-			h.channels[ch] = make(map[string]*Client)
+			h.channels[ch] = make(map[string]struct{})
 			newChannels = append(newChannels, ch)
 		}
-		h.channels[ch][client.uidHex] = client
+		h.channels[ch][client.uidHex] = struct{}{}
 	}
 	sysCh := sysChannel(client.uidHex)
 	if _, ok := h.channels[sysCh]; !ok {
-		h.channels[sysCh] = make(map[string]*Client)
+		h.channels[sysCh] = make(map[string]struct{})
 		newChannels = append(newChannels, sysCh)
 	}
-	h.channels[sysCh][client.uidHex] = client
+	h.channels[sysCh][client.uidHex] = struct{}{}
 	h.channelsMu.Unlock()
 	// Subscribe Redis channels nếu có channel mới
 	if len(newChannels) > 0 {
@@ -97,32 +102,48 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 // Unregister xóa client khỏi Hub khi WS disconnect.
 // Unsubscribe Redis channels nếu không còn client nào subscribe.
 func (h *Hub) Unregister(client *Client) {
-	// Lock both maps in a fixed order to avoid deadlocks
-	h.clientsMu.Lock()
-	h.channelsMu.Lock()
+	// Remove this session (conn) from clients map. If user has no more sessions,
+	// remove uid entries from channels and schedule redis unsubscribe.
 
-	if _, ok := h.clients[client.uidHex]; !ok {
-		h.channelsMu.Unlock()
+	h.clientsMu.Lock()
+	sessions, ok := h.clients[client.uidHex]
+	if !ok {
 		h.clientsMu.Unlock()
 		return // already unregistered
 	}
 
-	delete(h.clients, client.uidHex)
-
-	emptyChannels := make([]string, 0)
-	for ch, clients := range h.channels {
-		delete(clients, client.uidHex)
-		if len(clients) == 0 {
-			delete(h.channels, ch)
-			emptyChannels = append(emptyChannels, ch)
-		}
+	// remove this connection
+	delete(sessions, client.ConnID)
+	// track whether user still has any sessions
+	stillOnline := len(sessions) > 0
+	if !stillOnline {
+		delete(h.clients, client.uidHex)
 	}
-
-	h.channelsMu.Unlock()
 	h.clientsMu.Unlock()
 
-	close(client.send)        // Close send channel to stop writePump
-	h.rm.ClearAll(client.uid) // Clear viewing state for this user
+	// If user went offline (no sessions), remove uid from channels map
+	emptyChannels := make([]string, 0)
+	if !stillOnline {
+		h.channelsMu.Lock()
+		for ch, uids := range h.channels {
+			delete(uids, client.uidHex)
+			if len(uids) == 0 {
+				delete(h.channels, ch)
+				emptyChannels = append(emptyChannels, ch)
+			}
+		}
+		h.channelsMu.Unlock()
+	}
+
+	// Close send channel (idempotent via closeSend)
+	client.closeSend()
+
+	// Clear viewing state for this specific user (if offline)
+	if !stillOnline {
+		h.rm.ClearAll(client.uid)
+		// cleanup presence key since no session remains
+		_ = h.rdb.Del(context.Background(), presenceKey(client.uidHex)).Err()
+	}
 
 	// Unsubscribe Redis channels that are now empty
 	if len(emptyChannels) > 0 {
@@ -142,23 +163,28 @@ func (h *Hub) dispatchAndIntercept(channel string, payload []byte) {
 
 func (h *Hub) dispatchToClients(channel string, payload []byte) {
 	h.channelsMu.RLock()
-	clients, ok := h.channels[channel]
-	if !ok { // Không có client nào subscribe channel này
+	uids, ok := h.channels[channel]
+	if !ok { // No subscribers
 		h.channelsMu.RUnlock()
 		return
 	}
-	targets := make([]*Client, 0, len(clients))
-	for _, c := range clients {
-		targets = append(targets, c)
+	// collect targets across all sessions for each uid
+	targets := make([]*Client, 0)
+	h.clientsMu.RLock()
+	for uid := range uids {
+		if sessions, ok := h.clients[uid]; ok {
+			for _, c := range sessions {
+				targets = append(targets, c)
+			}
+		}
 	}
+	h.clientsMu.RUnlock()
 	h.channelsMu.RUnlock()
 
-	// Gửi payload đến tất cả client subscribe channel này
 	for _, c := range targets {
 		select {
 		case c.send <- payload:
 		default:
-			// Buffer đầy → client đọc quá chậm → ngắt kết nối.
 			h.log.Warn("client send buffer full, disconnecting", zap.String("uid", c.uidHex))
 			h.Unregister(c)
 		}
@@ -204,10 +230,10 @@ func (h *Hub) interceptMembership(payload []byte) {
 func (h *Hub) handleSysEvent(chanel string, payload []byte) {
 	uidhex := strings.TrimPrefix(chanel, "sys:")
 	h.clientsMu.RLock()
-	client, online := h.clients[uidhex]
+	sessions, online := h.clients[uidhex]
 	h.clientsMu.RUnlock()
 
-	if !online {
+	if !online || len(sessions) == 0 {
 		return
 	}
 
@@ -222,9 +248,13 @@ func (h *Hub) handleSysEvent(chanel string, payload []byte) {
 	}
 	switch cmd.Type {
 	case SysConvSubscribe:
-		h.subscribeLocalClient(client, cidBytes)
+		for _, client := range sessions {
+			h.subscribeLocalClient(client, cidBytes)
+		}
 	case SysConvUnsubscribe:
-		h.unsubscribeLocalClient(client, cidBytes)
+		for _, client := range sessions {
+			h.unsubscribeLocalClient(client, cidBytes)
+		}
 	}
 }
 
@@ -235,10 +265,10 @@ func (h *Hub) subscribeLocalClient(client *Client, convID []byte) {
 	needSubscribe := false
 	h.channelsMu.Lock()
 	if _, ok := h.channels[ch]; !ok {
-		h.channels[ch] = make(map[string]*Client)
+		h.channels[ch] = make(map[string]struct{})
 		needSubscribe = true
 	}
-	h.channels[ch][client.uidHex] = client
+	h.channels[ch][client.uidHex] = struct{}{}
 	h.channelsMu.Unlock()
 
 	client.addConv(cidHex)
@@ -258,9 +288,9 @@ func (h *Hub) unsubscribeLocalClient(client *Client, convID []byte) {
 	client.removeConv(cidHex)
 	channelEmpty := false
 	h.channelsMu.Lock()
-	if clients, ok := h.channels[ch]; ok {
-		delete(clients, client.uidHex)
-		if len(clients) == 0 {
+	if uids, ok := h.channels[ch]; ok {
+		delete(uids, client.uidHex)
+		if len(uids) == 0 {
 			delete(h.channels, ch)
 			channelEmpty = true
 		}
