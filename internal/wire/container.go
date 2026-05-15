@@ -1,16 +1,21 @@
 package wire
 
 import (
+	"context"
+
+	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/handler"
 	"github.com/dinhdev-nu/chat-platform-api/internal/service"
+	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/dinhdev-nu/chat-platform-api/internal/wire/provider"
 )
 
 type Container struct {
-	AuthHandler    *handler.AuthHandler
-	UserHandler    *handler.UserHandler
-	RoomHandler    *handler.RoomHandler
-	MessageHandler *handler.MessageHandler
+	AuthHandler      *handler.AuthHandler
+	UserHandler      *handler.UserHandler
+	RoomHandler      *handler.RoomHandler
+	MessageHandler   *handler.MessageHandler
+	WebSocketHandler *websocket.Handler
 
 	AuthService *service.AuthService
 }
@@ -20,7 +25,10 @@ func NewContainer() *Container {
 	// infrastructure
 	jwt := provider.NewJWTManager()
 	mailQueue := provider.NewSendEmailQueueHandler()
-	roomViewer := provider.NewRoomViewer()
+	roomManager := websocket.NewRoomManager()
+	roomViewer := roomManager
+	hub := websocket.NewHub(g.RedisClient, roomManager, g.Logger)
+	go hub.Run(context.Background())
 
 	// repositories
 	userRepo := provider.NewUserRepository()
@@ -39,12 +47,14 @@ func NewContainer() *Container {
 	userHandler := provider.NewUserHandler(userService)
 	roomHandler := provider.NewRoomHandler(roomService)
 	messageHandler := provider.NewMessageHandler(messageService)
+	wsHandler := provider.NewWebSocketHandler(hub, roomManager, roomRepo, userRepo, g.Logger)
 
 	return &Container{
-		AuthHandler:    authHandler,
-		UserHandler:    userHandler,
-		RoomHandler:    roomHandler,
-		MessageHandler: messageHandler,
+		AuthHandler:      authHandler,
+		UserHandler:      userHandler,
+		RoomHandler:      roomHandler,
+		MessageHandler:   messageHandler,
+		WebSocketHandler: wsHandler,
 
 		AuthService: authService,
 	}

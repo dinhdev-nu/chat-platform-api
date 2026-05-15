@@ -80,8 +80,11 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 		h.channels[ch][client.uidHex] = client
 	}
 	sysCh := sysChannel(client.uidHex)
-	h.channels[sysCh] = map[string]*Client{client.uidHex: client}
-	newChannels = append(newChannels, sysCh)
+	if _, ok := h.channels[sysCh]; !ok {
+		h.channels[sysCh] = make(map[string]*Client)
+		newChannels = append(newChannels, sysCh)
+	}
+	h.channels[sysCh][client.uidHex] = client
 	h.channelsMu.Unlock()
 	// Subscribe Redis channels nếu có channel mới
 	if len(newChannels) > 0 {
@@ -94,16 +97,19 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 // Unregister xóa client khỏi Hub khi WS disconnect.
 // Unsubscribe Redis channels nếu không còn client nào subscribe.
 func (h *Hub) Unregister(client *Client) {
+	// Lock both maps in a fixed order to avoid deadlocks
 	h.clientsMu.Lock()
+	h.channelsMu.Lock()
+
 	if _, ok := h.clients[client.uidHex]; !ok {
-		h.channelsMu.Lock()
-		return // đã unregister rồi, tránh xóa nhiều lần
+		h.channelsMu.Unlock()
+		h.clientsMu.Unlock()
+		return // already unregistered
 	}
+
 	delete(h.clients, client.uidHex)
-	h.channelsMu.Unlock()
 
 	emptyChannels := make([]string, 0)
-	h.channelsMu.Lock()
 	for ch, clients := range h.channels {
 		delete(clients, client.uidHex)
 		if len(clients) == 0 {
@@ -111,11 +117,14 @@ func (h *Hub) Unregister(client *Client) {
 			emptyChannels = append(emptyChannels, ch)
 		}
 	}
-	h.channelsMu.Unlock()
-	close(client.send)        // Đóng channel send để dừng goroutine writePump
-	h.rm.ClearAll(client.uid) // Xóa tất cả trạng thái viewing của user
 
-	// Unsubscribe Redis channels nếu có channel nào trống
+	h.channelsMu.Unlock()
+	h.clientsMu.Unlock()
+
+	close(client.send)        // Close send channel to stop writePump
+	h.rm.ClearAll(client.uid) // Clear viewing state for this user
+
+	// Unsubscribe Redis channels that are now empty
 	if len(emptyChannels) > 0 {
 		if err := h.pubsub.Unsubscribe(context.Background(), emptyChannels...); err != nil {
 			h.log.Warn("pubsub unsubscribe failed", zap.Strings("channels", emptyChannels), zap.Error(err))
@@ -124,6 +133,10 @@ func (h *Hub) Unregister(client *Client) {
 }
 
 func (h *Hub) dispatchAndIntercept(channel string, payload []byte) {
+	// Intercept domain membership events (member.added/member.removed)
+	h.interceptMembership(payload)
+
+	// Then dispatch the original payload to subscribed clients.
 	h.dispatchToClients(channel, payload)
 }
 

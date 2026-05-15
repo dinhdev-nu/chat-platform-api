@@ -46,6 +46,7 @@ func InitRouter() *gin.Engine {
 		router.RegisterUserRoutes(v1, v1Protected, container.UserHandler)
 		router.RegisterRoomRouters(v1, v1Protected, container.RoomHandler)
 		router.RegisterMessageRouters(v1, v1Protected, container.MessageHandler)
+		v1Protected.GET("/ws", container.WebSocketHandler.ServeWS)
 	}
 
 	return r
