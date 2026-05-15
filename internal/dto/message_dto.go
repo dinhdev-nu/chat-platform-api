@@ -27,3 +27,44 @@ type AttachmentRequest struct {
 type MarkAsReadRequest struct {
 	LastReadMsgID []byte `json:"last_read_msg_id" binding:"required,len=32"`
 }
+
+// Response DTOs
+type AttachmentResponse struct {
+	ID            string `json:"id"`
+	MessageID     string `json:"message_id,omitempty"`
+	FileName      string `json:"file_name"`
+	FileURL       string `json:"file_url"`
+	MimeType      string `json:"mime_type"`
+	FileSizeBytes int64  `json:"file_size_bytes"`
+	Width         *int   `json:"width,omitempty"`
+	Height        *int   `json:"height,omitempty"`
+	DurationSec   *int   `json:"duration_sec,omitempty"`
+	CreatedAt     string `json:"created_at"`
+}
+
+type MessageReactionResponse struct {
+	ID        uint64 `json:"id"`
+	MessageID string `json:"message_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	Emoji     string `json:"emoji"`
+	CreatedAt string `json:"created_at"`
+}
+
+type MessageResponse struct {
+	ID               string                    `json:"id"`
+	ConversationID   string                    `json:"conversation_id"`
+	SenderID         string                    `json:"sender_id"`
+	ParentID         string                    `json:"parent_id,omitempty"`
+	Type             int8                      `json:"type"`
+	Content          string                    `json:"content,omitempty"`
+	ContentEncrypted bool                      `json:"content_encrypted"`
+	Iv               string                    `json:"iv,omitempty"`
+	Seq              uint64                    `json:"seq"`
+	IsEdited         bool                      `json:"is_edited"`
+	IsDeleted        bool                      `json:"is_deleted"`
+	DeletedAt        string                    `json:"deleted_at,omitempty"`
+	CreatedAt        string                    `json:"created_at"`
+	UpdatedAt        string                    `json:"updated_at"`
+	Attachments      []AttachmentResponse      `json:"attachments,omitempty"`
+	Reactions        []MessageReactionResponse `json:"reactions,omitempty"`
+}
