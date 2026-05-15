@@ -149,25 +149,41 @@ func (h *RoomHandler) RemoveMember(c *gin.Context) {
 }
 
 func convToCreateDTO(c *model.Conversation) dto.CreateRoomResponse {
-	var name, desc, avatar, createdBy, lastMsg, lastAct string
+	var name, desc, avatar, createdBy, lastMsg, lastAct *string
+
+	// Name: nil or pointer
 	if c.Name != nil {
-		name = *c.Name
+		name = c.Name
 	}
+
+	// Description: nil or pointer
 	if c.Description != nil {
-		desc = *c.Description
+		desc = c.Description
 	}
+
+	// AvatarURL: nil or pointer
 	if c.AvatarURL != nil {
-		avatar = *c.AvatarURL
+		avatar = c.AvatarURL
 	}
+
+	// CreatedBy: nil if empty, else pointer to hex string
 	if len(c.CreatedBy) > 0 {
-		createdBy = hex.EncodeToString(c.CreatedBy)
+		cbStr := hex.EncodeToString(c.CreatedBy)
+		createdBy = &cbStr
 	}
+
+	// LastMessageID: nil if empty, else pointer to hex string
 	if len(c.LastMessageID) > 0 {
-		lastMsg = hex.EncodeToString(c.LastMessageID)
+		lmStr := hex.EncodeToString(c.LastMessageID)
+		lastMsg = &lmStr
 	}
+
+	// LastActivityAt: nil or pointer to RFC3339 string
 	if c.LastActivityAt != nil {
-		lastAct = c.LastActivityAt.Format(time.RFC3339)
+		laStr := c.LastActivityAt.Format(time.RFC3339)
+		lastAct = &laStr
 	}
+
 	return dto.CreateRoomResponse{
 		ID:             hex.EncodeToString(c.ID),
 		Type:           int8(c.Type),

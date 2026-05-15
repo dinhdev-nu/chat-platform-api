@@ -201,26 +201,35 @@ func (h *MessageHandler) toAttachmentDomain(attachReq []dto.AttachmentRequest) [
 
 // --- mapping helpers (domain -> dto)
 func (h *MessageHandler) msgToDTO(m *model.Message) dto.MessageResponse {
-	var content, iv, deletedAt string
+	var parentID, content, iv, deletedAt *string
+
+	// ParentID: nil if empty, else pointer to hex string
+	if len(m.ParentID) > 0 {
+		pID := hex.EncodeToString(m.ParentID)
+		parentID = &pID
+	}
+
+	// Content: nil or pointer to string
 	if m.Content != nil {
-		content = *m.Content
+		content = m.Content
 	}
+
+	// Iv: nil or pointer to string
 	if m.Iv != nil {
-		iv = *m.Iv
+		iv = m.Iv
 	}
+
+	// DeletedAt: nil if not deleted, else pointer to RFC3339 string
 	if m.DeletedAt != nil {
-		deletedAt = m.DeletedAt.Format(time.RFC3339)
+		delStr := m.DeletedAt.Format(time.RFC3339)
+		deletedAt = &delStr
 	}
+
 	return dto.MessageResponse{
-		ID:             hex.EncodeToString(m.ID),
-		ConversationID: hex.EncodeToString(m.ConversationID),
-		SenderID:       hex.EncodeToString(m.SenderID),
-		ParentID: func() string {
-			if len(m.ParentID) == 0 {
-				return ""
-			}
-			return hex.EncodeToString(m.ParentID)
-		}(),
+		ID:               hex.EncodeToString(m.ID),
+		ConversationID:   hex.EncodeToString(m.ConversationID),
+		SenderID:         hex.EncodeToString(m.SenderID),
+		ParentID:         parentID,
 		Type:             int8(m.Type),
 		Content:          content,
 		ContentEncrypted: m.ContentEncrypted,
