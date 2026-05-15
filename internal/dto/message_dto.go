@@ -1,13 +1,13 @@
 package dto
 
 type SendMessageRequest struct {
-	Content     string              `json:"content"`
-	Type        int8                `json:"type" validate:"required,min=1,max=5"`
-	ParentID    []byte              `json:"parent_id,omitempty" validate:"omitempty,len=32"`
-	Attachments []AttachmentRequest `json:"attachments,omitempty" validate:"dive"`
+	Content     string              `json:"content" binding:"omitempty,max=65536"`
+	Type        int8                `json:"type" binding:"required,min=1,max=5"`
+	ParentID    []byte              `json:"parent_id,omitempty" binding:"omitempty,len=32"`
+	Attachments []AttachmentRequest `json:"attachments,omitempty" binding:"dive"`
 }
 type EditMessageRequest struct {
-	Content string `json:"content,omitempty"`
+	Content string `json:"content" binding:"omitempty,max=65536"`
 }
 
 type TogglePinRequest struct {

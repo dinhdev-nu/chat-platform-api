@@ -21,6 +21,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 type MessageService struct {
@@ -228,69 +229,90 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 	}
 	fetch := limit + 1
 
-	var (
-		cursorTS  *time.Time
-		cursorSeq *uint64
-	)
+	var cursorTS *time.Time
+	var cursorSeq *uint64
 	if cursor != nil && *cursor != "" {
 		ts, seq, err := decodeMsgCursor(*cursor)
 		if err != nil {
 			return nil, ae.BadRequest("Invalid cursor format")
 		}
-		cursorTS = &ts
-		cursorSeq = &seq
+		cursorTS, cursorSeq = &ts, &seq
 	}
-	// 1/Get messages from DB
-	rows, err := s.msgRepo.ListMessages(ctx, convID, cursorTS, cursorSeq, int32(limit))
+
+	// 1. Get messages from DB
+	rows, err := s.msgRepo.ListMessages(ctx, convID, cursorTS, cursorSeq, int32(fetch))
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
+
 	hasMore := len(rows) == fetch
 	if hasMore {
 		rows = rows[:limit]
 	}
-	// 2/ Get attachments
+
+	if len(rows) == 0 {
+		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}}, nil
+	}
+
+	// Pre-allocate map and slice
 	msgIDs := make([][]byte, len(rows))
-	msgMeta := make(map[string]*model.MessageWithMeta, len(rows))
+	msgResult := make([]*model.MessageWithMeta, len(rows))
+	msgMap := make(map[string]*model.MessageWithMeta, len(rows))
+
 	for i, m := range rows {
 		msgIDs[i] = m.ID
-		msgMeta[hex.EncodeToString(m.ID)] = &model.MessageWithMeta{Message: m, Attachments: []*model.Attachment{}, Reactions: []*model.MessageReaction{}}
+		meta := &model.MessageWithMeta{
+			Message:     m,
+			Attachments: []*model.Attachment{},
+			Reactions:   []*model.MessageReaction{},
+		}
+		msgResult[i] = meta
+		msgMap[string(m.ID)] = meta // Dùng string cast thay vì hex encode cho tốc độ
 	}
 
-	if len(msgIDs) > 0 {
-		if atts, err := s.msgRepo.GetAttachmentsByMessageIDs(ctx, msgIDs); err == nil {
-			for _, att := range atts {
-				hexID := hex.EncodeToString(att.MessageID)
-				if meta, exists := msgMeta[hexID]; exists {
-					meta.Attachments = append(meta.Attachments, att)
-				}
-			}
-		}
+	// 2. Parallel fetch using errgroup
+	g, gCtx := errgroup.WithContext(ctx)
 
-		// 3/ Get reactions
-		if reactions, err := s.msgRepo.GetReactionsByMessageIDs(ctx, msgIDs); err == nil {
-			for _, reaction := range reactions {
-				hexID := hex.EncodeToString(reaction.MessageID)
-				if meta, exists := msgMeta[hexID]; exists {
-					meta.Reactions = append(meta.Reactions, reaction)
-				}
-			}
+	var atts []*model.Attachment
+	g.Go(func() error {
+		var err error
+		atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgIDs)
+		return err
+	})
+
+	var reactions []*model.MessageReaction
+	g.Go(func() error {
+		var err error
+		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs)
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, ae.Internal(err) // Trả lỗi ngay nếu DB gặp vấn đề
+	}
+
+	// 3. Mapping data (O(N) thay vì lặp lồng)
+	for _, att := range atts {
+		if meta, exists := msgMap[string(att.MessageID)]; exists {
+			meta.Attachments = append(meta.Attachments, att)
 		}
 	}
-	// 4/ Build result
-	msgResult := make([]*model.MessageWithMeta, 0, len(rows))
-	for i, m := range rows {
-		msgResult[i] = msgMeta[hex.EncodeToString(m.ID)]
+	for _, react := range reactions {
+		if meta, exists := msgMap[string(react.MessageID)]; exists {
+			meta.Reactions = append(meta.Reactions, react)
+		}
 	}
-	var nextCursor *string
-	if hasMore && len(msgResult) > 0 {
-		last := msgResult[len(msgResult)-1]
-		encoded := encodeMsgCursor(last.Message.CreatedAt, last.Message.Seq)
-		nextCursor = &encoded
+
+	// 4. Build Next Cursor
+	nextCursor := ""
+	if hasMore {
+		last := rows[len(rows)-1]
+		nextCursor = encodeMsgCursor(last.CreatedAt, last.Seq)
 	}
+
 	return &ResultPage[*model.MessageWithMeta]{
 		Items:      msgResult,
-		NextCursor: nextCursor,
+		NextCursor: &nextCursor,
 		HasMore:    hasMore,
 	}, nil
 }

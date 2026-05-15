@@ -249,22 +249,22 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 		convs[i] = c
 	}
 
-	var nextCursor *string
+	nextCursor := ""
 	if hasMore {
 		// Tạo cursor cho lần gọi tiếp theo
 		lastConv := convs[len(convs)-1]
 		encoded := encodeCursor(*lastConv.LastActivityAt, lastConv.ID)
-		nextCursor = &encoded
+		nextCursor = encoded
 	}
 
 	return &ResultPage[*model.ConversationListRow]{
 		Items:      convs,
-		NextCursor: nextCursor,
+		NextCursor: &nextCursor,
 		HasMore:    hasMore,
 	}, nil
 }
 
-func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUID []byte) error {
+func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUID []byte, actorName string) error {
 	// 1/Kiểm tra actor có phải admin/owner ko
 	actorRole, err := s.roomRepo.GetMemberRole(ctx, convUID, actorUID)
 	if err != nil {
@@ -308,7 +308,7 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		if err != nil {
 			return
 		}
-		content := fmt.Sprintf("%s added %s", hex.EncodeToString(actorUID), hex.EncodeToString(targetUID))
+		content := fmt.Sprintf("%s added %s", actorName, targetUser.Username)
 
 		arg := &model.Message{
 			ID:             msgID,
@@ -320,16 +320,16 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		_ = s.msgRepo.InsertSystemMessage(bg, arg)
 	}()
 	// Push notification
-	convHex := hex.EncodeToString(convUID)
-	_ = g.PubSub.Publish(ctx, convUID, redis.Event{
-		Type:    redis.EventMemberAdded,
-		ConvID:  convHex,
-		Payload: json.RawMessage(`{"event":"member.added","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
-	})
+	// convHex := hex.EncodeToString(convUID)
+	// _ = g.PubSub.Publish(ctx, convUID, redis.Event{
+	// 	Type:    redis.EventMemberAdded,
+	// 	ConvID:  convHex,
+	// 	Payload: json.RawMessage(`{"event":"member.added","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
+	// })
 	return nil
 }
 
-func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte) error {
+func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte, actorName string) error {
 	// 1/Kiểm tra actor có phải admin/owner ko
 	actorRole, err := s.roomRepo.GetMemberRole(ctx, convID, actorUID)
 	if err != nil {
@@ -340,6 +340,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 	}
 
 	// 2/ Kiểm tra target user exists
+	targetName := actorName
 	isSelf := bytes.Equal(actorUID, targetUID)
 	if !isSelf {
 		targetUser, err := s.userRepo.FindByID(ctx, targetUID)
@@ -349,6 +350,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		if targetUser == nil || !targetUser.IsActive() {
 			return ae.New(ae.ErrUserNotFound, "User not found")
 		}
+		targetName = targetUser.Username
 	}
 
 	// 3/ Xóa member
@@ -377,7 +379,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		if !isSelf {
 			action = "removed"
 		}
-		content := fmt.Sprintf("%s %s", hex.EncodeToString(targetUID), action)
+		content := fmt.Sprintf("%s %s", targetName, action)
 		arg := &model.Message{
 			ID:             msgID,
 			ConversationID: convID,

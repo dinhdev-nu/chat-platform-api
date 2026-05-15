@@ -87,16 +87,10 @@ func (h *RoomHandler) ListConversations(c *gin.Context) {
 	for _, row := range convs.Items {
 		items = append(items, convRowToListDTO(row))
 	}
-	paged := s.ResultPage[dto.ConversationListItem]{
-		Items:      items,
-		HasMore:    convs.HasMore,
-		NextCursor: convs.NextCursor,
-	}
-
-	r.Paginated(c, &paged, &r.Pagination{
+	r.Paginated(c, &items, &r.Pagination{
 		Limit:      limit,
-		HasMore:    paged.HasMore,
-		NextCursor: *paged.NextCursor,
+		HasMore:    convs.HasMore,
+		NextCursor: *convs.NextCursor,
 	}, "Conversations retrieved successfully")
 }
 
@@ -106,7 +100,7 @@ func (h *RoomHandler) AddMember(c *gin.Context) {
 		_ = c.Error(ae.Unauthorized("Unauthorized"))
 		return
 	}
-	roomID, err := crypto.ParseHexToBytes(c.Query("id"))
+	roomID, err := crypto.ParseHexToBytes(c.Param("id"))
 	if err != nil {
 		_ = c.Error(ae.ValidationError("Invalid room ID"))
 		return
@@ -116,7 +110,7 @@ func (h *RoomHandler) AddMember(c *gin.Context) {
 		_ = c.Error(ae.ValidationError(err.Error()))
 		return
 	}
-	err = h.rs.AddMember(c.Request.Context(), roomID, user.ID, req.UserID)
+	err = h.rs.AddMember(c.Request.Context(), roomID, user.ID, req.UserID, user.Username)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -130,17 +124,17 @@ func (h *RoomHandler) RemoveMember(c *gin.Context) {
 		_ = c.Error(ae.Unauthorized("Unauthorized"))
 		return
 	}
-	roomID, err := crypto.ParseHexToBytes(c.Query("id"))
+	roomID, err := crypto.ParseHexToBytes(c.Param("id"))
 	if err != nil {
 		_ = c.Error(ae.ValidationError("Invalid room ID"))
 		return
 	}
-	targetUserID, err := crypto.ParseHexToBytes(c.Query("user_id"))
+	targetUserID, err := crypto.ParseHexToBytes(c.Param("user_id"))
 	if err != nil {
 		_ = c.Error(ae.ValidationError("Invalid user ID"))
 		return
 	}
-	err = h.rs.RemoveMember(c.Request.Context(), roomID, user.ID, targetUserID)
+	err = h.rs.RemoveMember(c.Request.Context(), roomID, user.ID, targetUserID, user.Username)
 	if err != nil {
 		_ = c.Error(err)
 		return

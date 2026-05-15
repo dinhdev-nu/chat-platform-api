@@ -105,7 +105,7 @@ func (r *roomRepo) GetMemberRole(ctx context.Context, convID, userID []byte) (mo
 func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorTS *time.Time, cursorID []byte, limit int32) ([]*model.ConversationListRow, error) {
 	var convs []*model.ConversationListRow
 
-	if cursorTS != nil {
+	if cursorTS == nil {
 		rows, err := r.q.ListConversationsFirstPage(ctx, sqlc.ListConversationsFirstPageParams{
 			UserID: userID,
 			Limit:  limit,
@@ -125,6 +125,7 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 			UserID:           userID,
 			LastActivityAt:   cursorTS,
 			LastActivityAt_2: cursorTS,
+			ID:               cursorID,
 			Limit:            limit,
 		})
 		if err != nil {

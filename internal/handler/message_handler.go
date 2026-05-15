@@ -40,6 +40,11 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 		return
 	}
 	if len(req.Attachments) == 0 {
+		if req.Content == "" {
+			_ = c.Error(ae.New(ae.ErrValidation, "Message content cannot be empty"))
+			return
+		}
+
 		msg, err := h.ms.SendMessage(c, convID, user.ID, req.Type, req.Content, req.ParentID)
 		if err != nil {
 			_ = c.Error(err)
