@@ -31,7 +31,7 @@ type CreateRoomResponse struct {
 
 type ConversationListItem struct {
 	ID             string  `json:"id"`
-	Type           int8    `json:"type"`
+	Type           int8    `json:"type"` // 1: DM, 2: Group, 3: Channel
 	Name           *string `json:"name,omitempty"`
 	Description    *string `json:"description,omitempty"`
 	AvatarURL      *string `json:"avatar_url,omitempty"`

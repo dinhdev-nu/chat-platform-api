@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	presenceKey string        = "presence:%s" // s = user ID
-	presenceTTL time.Duration = 5 * time.Minute
+	presenceKey string = "presence:%s" // s = user ID
+	// presenceTTL = 3 * pingPeriod (pingPeriod = 50s) => 150s
+	presenceTTL time.Duration = 150 * time.Second
 )
 
 type PresenceStore struct {

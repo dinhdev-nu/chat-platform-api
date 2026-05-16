@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -141,8 +142,12 @@ func (h *Hub) Unregister(client *Client) {
 	// Clear viewing state for this specific user (if offline)
 	if !stillOnline {
 		h.rm.ClearAll(client.uid)
-		// cleanup presence key since no session remains
-		_ = h.rdb.Del(context.Background(), presenceKey(client.uidHex)).Err()
+		// cleanup presence via centralized PresenceStore
+		if g.Presence != nil {
+			_ = g.Presence.SetOffline(context.Background(), client.uid)
+		} else {
+			_ = h.rdb.Del(context.Background(), presenceKey(client.uidHex)).Err()
+		}
 	}
 
 	// Unsubscribe Redis channels that are now empty

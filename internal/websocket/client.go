@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
+	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/google/uuid"
 	gorillaws "github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -19,8 +21,8 @@ const (
 	pingPeriod     = 50 * time.Second
 	maxMessageSize = 4 * 1024
 	sendBufferSize = 256
-	presenceTTL    = 30 * time.Second
-	typingTTL      = 3 * time.Second
+	// presenceTTL centralized in internal/infrastructure/redis/presence.go
+	typingTTL = 3 * time.Second
 )
 
 // Client đại diện 1 kết nối WS của 1 user
@@ -102,7 +104,13 @@ func (c *Client) readPump() {
 
 	c.conn.SetReadLimit(maxMessageSize)
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait)) // Thiết lập deadline ban đầu
-	c.conn.SetPongHandler(func(string) error {           // Reset deadline mỗi khi nhận được pong
+	c.conn.SetPongHandler(func(string) error {           // Reset deadline và refresh presence mỗi khi nhận được pong
+		// Refresh presence TTL so presence is tied to protocol-level pong
+		if g.Presence != nil {
+			_ = g.Presence.Heartbeat(context.Background(), c.uid)
+		} else {
+			_ = c.rdb.Expire(context.Background(), presenceKey(c.uidHex), 3*pingPeriod).Err()
+		}
 		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
@@ -167,8 +175,6 @@ func (c *Client) handleInbound(data []byte) {
 		return // Ignore message không hợp lệ
 	}
 	switch evt.Type {
-	case InboundPing:
-		c.onPing()
 	case InboundTyping:
 		c.onTyping(evt.Payload)
 	case InboundViewing:
@@ -185,22 +191,13 @@ func (c *Client) handleInbound(data []byte) {
 	}
 }
 
-func (c *Client) onPing() {
-	ctx := context.Background()
-	_ = c.rdb.Expire(ctx, presenceKey(c.uidHex), presenceTTL).Err()
-
-	pong, _ := json.Marshal(OutboundEvent{Type: OutboundPong})
-	select {
-	case c.send <- pong:
-	default: // channel buffered, -> bỏ qua pong
-	}
-}
-
 func (c *Client) onTyping(payload json.RawMessage) {
 	var p TypingPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return
 	}
+
+	fmt.Printf("User %s is typing in conversation %s\n", c.uidHex, p.ConvID)
 
 	if !c.hasConv(p.ConvID) {
 		c.log.Warn("ws typing for non-viewing conv",
