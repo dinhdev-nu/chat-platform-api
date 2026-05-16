@@ -27,6 +27,8 @@ type CreateRoomResponse struct {
 	LastActivityAt *string `json:"last_activity_at,omitempty"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
+
+	LastMessageText *string `json:"last_message_text,omitempty"`
 }
 
 type ConversationListItem struct {
@@ -44,4 +46,6 @@ type ConversationListItem struct {
 	Role        int8  `json:"role"`
 	IsMuted     bool  `json:"is_muted"`
 	UnreadCount int64 `json:"unread_count"`
+
+	LastMessageText *string `json:"last_message_text,omitempty"`
 }

@@ -179,7 +179,7 @@ func (s *MessageService) afterSend(ctx context.Context, msg *model.Message) {
 	}()
 
 	// Last msg + act (stream worker) ( chưa triển khai ngay )
-	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID)
+	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
 }
 
 func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {

@@ -14,7 +14,7 @@ type Querier interface {
 	DeleteConversationMember(ctx context.Context, arg DeleteConversationMemberParams) error
 	DeleteMessageReaction(ctx context.Context, arg DeleteMessageReactionParams) error
 	GetAttachmentsByMessageIDs(ctx context.Context, messageIds [][]byte) ([]Attachment, error)
-	GetConversationByID(ctx context.Context, id []byte) (Conversation, error)
+	GetConversationByID(ctx context.Context, id []byte) (GetConversationByIDRow, error)
 	GetConversationMember(ctx context.Context, arg GetConversationMemberParams) (ConversationMember, error)
 	// Dùng để warm conv:members Redis cache
 	GetConversationMemberIDs(ctx context.Context, conversationID []byte) ([][]byte, error)

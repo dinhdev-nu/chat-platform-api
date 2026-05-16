@@ -180,6 +180,8 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 		if err := s.msgRepo.InsertSystemMessage(bg, arg); err != nil {
 			return
 		}
+		// Update conversation last message id/text
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, convID, arg.ID, arg.Content)
 	}()
 
 	// // Push notification
@@ -318,6 +320,7 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 			Seq:            uint64(seqVal),
 		}
 		_ = s.msgRepo.InsertSystemMessage(bg, arg)
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, convUID, arg.ID, arg.Content)
 	}()
 	// Push notification
 	// convHex := hex.EncodeToString(convUID)
@@ -388,6 +391,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 			Seq:            uint64(seqVal),
 		}
 		_ = s.msgRepo.InsertSystemMessage(bg, arg)
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, convID, arg.ID, arg.Content)
 	}()
 
 	// Push notification
