@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/mysql/gorm/model"
+	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/gin-gonic/gin"
 	gorillaws "github.com/gorilla/websocket"
@@ -24,7 +24,7 @@ var upgrader = gorillaws.Upgrader{
 		case "http://localhost:3000", "https://chat-app-client-phi.vercel.app":
 			return true
 		default:
-			return false
+			return true
 		}
 	},
 }
