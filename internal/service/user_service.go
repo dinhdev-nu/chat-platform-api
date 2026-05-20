@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
-	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
@@ -19,13 +18,8 @@ func NewUserService(ur r.UserRepository) *UserService {
 	return &UserService{userRepo: ur}
 }
 
-func (s *UserService) UpdateUser(ctx context.Context, userID []byte, req dto.UpdateUserRequest) (*model.User, error) {
-	user := &model.User{
-		Username:  req.Name,
-		AvatarURL: req.AvatarURL,
-		Bio:       req.Bio,
-	}
-	err := s.userRepo.Update(ctx, user, userID)
+func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *model.UserProfileUpdate) (*model.User, error) {
+	err := s.userRepo.Update(ctx, userID, update)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
@@ -77,53 +71,56 @@ func (s *UserService) Search(ctx context.Context, uid []byte, q string, cursor *
 	}, nil
 }
 
-func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetUID []byte) error {
+func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetUID []byte) (model.ContactRequestResult, error) {
 	if string(senderUID) == string(targetUID) {
-		return ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
+		return model.ContactRequestResult(""), ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
 	}
 
 	existing, err := s.userRepo.CheckUserExists(ctx, targetUID)
 	if err != nil {
-		return ae.Internal(err)
+		return model.ContactRequestResult(""), ae.Internal(err)
 	}
 	if !existing {
-		return ae.NotFound("user not found")
+		return model.ContactRequestResult(""), ae.NotFound("user not found")
 	}
 
 	pairs, err := s.userRepo.GetContactPair(ctx, senderUID, targetUID)
 	if err != nil {
-		return ae.Internal(err)
+		return model.ContactRequestResult(""), ae.Internal(err)
 	}
 
 	for _, p := range pairs {
 		switch {
 		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
-			return ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
+			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
 		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
-			return ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
+			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
 		case p.Status == model.ContactStatusAccepted:
-			return ae.New(ae.ErrCannotSendContactRequest, "already friends")
+			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "already friends")
 		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusPending:
-			return ae.New(ae.ErrCannotSendContactRequest, "request already sent")
+			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "request already sent")
 		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusPending:
 			// Đối phương đã gửi request → auto-accept.
 			_, err := s.userRepo.UpdateContactStatus(ctx, p.ID, model.ContactStatusAccepted)
-			return err
+			if err != nil {
+				return model.ContactRequestResult(""), ae.Internal(err)
+			}
+			return model.ContactRequestResultAccepted, nil
 		}
 	}
 
 	// Tạo mới request
 	if err := s.userRepo.CreateContactRequest(ctx, senderUID, targetUID); err != nil {
-		return ae.Internal(err)
+		return model.ContactRequestResult(""), ae.Internal(err)
 	}
-	return nil
+	return model.ContactRequestResultPending, nil
 }
 
 func (s *UserService) AcceptContactRequest(ctx context.Context, currentUID, senderUID []byte) error {
 	if string(currentUID) == string(senderUID) {
 		return ae.New(ae.ErrInvalidInput, "cannot accept request from yourself")
 	}
-	contact, err := s.userRepo.GetContactRecord(ctx, currentUID, senderUID)
+	contact, err := s.userRepo.GetContactRecord(ctx, senderUID, currentUID)
 	if err != nil {
 		return ae.Internal(err)
 	}

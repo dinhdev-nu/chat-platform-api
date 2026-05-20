@@ -23,7 +23,7 @@ func (r *userRepo) GetIncomingRequests(ctx context.Context, userID []byte, curso
 	if cursor == nil || *cursor == "" {
 		rows, err := ListIncomingFirstPage(ctx, r.db, ListIncomingFirstPageParams{
 			CurrentUserID: userID,
-			Limit:         limit + 1,
+			Limit:         limit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("userRepo.GetIncomingRequests: %w", err)
@@ -37,7 +37,7 @@ func (r *userRepo) GetIncomingRequests(ctx context.Context, userID []byte, curso
 	rows, err := ListIncomingNextPage(ctx, r.db, ListIncomingNextPageParams{
 		CurrentUserID: userID,
 		Cursor:        *cursor,
-		Limit:         limit + 1,
+		Limit:         limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("userRepo.GetIncomingRequests: %w", err)
@@ -53,7 +53,7 @@ func (r *userRepo) GetAcceptedContacts(ctx context.Context, userID []byte, curso
 	if cursor == nil || *cursor == "" {
 		rows, err := ListFriendsFirstPage(ctx, r.db, ListFriendsFirstPageParams{
 			CurrentUserID: userID,
-			Limit:         limit + 1,
+			Limit:         limit,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("userRepo.GetAcceptedContacts: %w", err)
@@ -67,7 +67,7 @@ func (r *userRepo) GetAcceptedContacts(ctx context.Context, userID []byte, curso
 	rows, err := ListFriendsNextPage(ctx, r.db, ListFriendsNextPageParams{
 		CurrentUserID: userID,
 		Cursor:        *cursor,
-		Limit:         limit + 1,
+		Limit:         limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("userRepo.GetAcceptedContacts: %w", err)
@@ -235,10 +235,38 @@ func (r *userRepo) Create(ctx context.Context, user *model.User) error {
 	return nil
 }
 
-func (r *userRepo) Update(ctx context.Context, user *model.User, userID []byte) error {
-	g := gormmodel.UserFormDomain(user)
+func (r *userRepo) Update(ctx context.Context, userID []byte, update *model.UserProfileUpdate) error {
+	if update == nil {
+		return nil
+	}
+	updates := map[string]any{}
+	if update.HasName {
+		if update.Name == nil {
+			updates["username"] = nil
+		} else {
+			updates["username"] = *update.Name
+		}
+	}
+	if update.HasAvatar {
+		if update.AvatarURL == nil {
+			updates["avatar_url"] = nil
+		} else {
+			updates["avatar_url"] = *update.AvatarURL
+		}
+	}
+	if update.HasBio {
+		if update.Bio == nil {
+			updates["bio"] = nil
+		} else {
+			updates["bio"] = *update.Bio
+		}
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+
 	if err := r.db.WithContext(ctx).
-		Model(&gormmodel.User{}).Where("id = ?", userID).Updates(&g).Error; err != nil {
+		Model(&gormmodel.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
 		return fmt.Errorf("userRepo.Update: %w", err)
 	}
 	return nil

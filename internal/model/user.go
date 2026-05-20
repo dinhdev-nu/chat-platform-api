@@ -35,6 +35,15 @@ type User struct {
 	UpdatedAt  time.Time
 }
 
+type UserProfileUpdate struct {
+	Name      *string
+	AvatarURL *string
+	Bio       *string
+	HasName   bool
+	HasAvatar bool
+	HasBio    bool
+}
+
 func (u *User) IsActive() bool {
 	return u.Status == UserStatusActive
 }
@@ -81,11 +90,17 @@ type OAuthAccount struct {
 }
 
 type ContactStatus int8
+type ContactRequestResult string
 
 const (
 	ContactStatusPending  ContactStatus = 1 // Chờ xác nhận
 	ContactStatusAccepted ContactStatus = 2 // Đã kết bạn
 	ContactStatusBlocked  ContactStatus = 3 // Đã chặn
+)
+
+const (
+	ContactRequestResultPending  ContactRequestResult = "pending"
+	ContactRequestResultAccepted ContactRequestResult = "accepted"
 )
 
 const TableNameGoDBUserContact = "user_contacts"
@@ -107,9 +122,9 @@ type UserContact struct {
 type SearchUser struct {
 	ID             string         `json:"id"`
 	Username       string         `json:"username"`
-	AvatarURL      *string        `json:"avatar_url"`
+	AvatarURL      *string        `json:"avatarUrl"`
 	Bio            *string        `json:"bio"`
-	LastSeenAt     *time.Time     `json:"last_seen_at"`
-	OutgoingStatus *ContactStatus `json:"outgoing_status,omitempty"`
-	IncomingStatus *ContactStatus `json:"incoming_status,omitempty"`
+	LastSeenAt     *time.Time     `json:"lastSeenAt"`
+	OutgoingStatus *ContactStatus `json:"outgoingStatus,omitempty"`
+	IncomingStatus *ContactStatus `json:"incomingStatus,omitempty"`
 }

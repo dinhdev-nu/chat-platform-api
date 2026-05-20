@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
@@ -42,7 +43,9 @@ func (h *AuthHandler) VerifyOTP(c *gin.Context) {
 		_ = c.Error(ar.ValidationError(err.Error()))
 		return
 	}
-	req.DeviceName = h.getDeviceName(c)
+	if strings.TrimSpace(req.DeviceName) == "" {
+		req.DeviceName = h.getDeviceName(c)
+	}
 
 	res, err := h.authService.VerifyOTP(c.Request.Context(), req, c.ClientIP())
 	if err != nil {
