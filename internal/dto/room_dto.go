@@ -7,9 +7,11 @@ type CreateDMRequest struct {
 }
 
 type CreateGroupRequest struct {
-	Name       string        `json:"name" validate:"required,min=1,max=100"`
-	Type       int8          `json:"type" validate:"required,oneof=2 3"` // 2: Group, 3: Channel
-	MemberUIDs []types.HexID `json:"member_user_ids" validate:"required,min=1,max=499,dive"`
+	Name        string        `json:"name" validate:"required,min=1,max=100"`
+	Type        int8          `json:"type" validate:"required,oneof=2 3"` // 2: Group, 3: Channel
+	AvatarURL  *string       `json:"avatar_url,omitempty" validate:"omitempty,max=512"`
+	Description *string       `json:"description,omitempty" validate:"omitempty,max=500"`
+	MemberUIDs  []types.HexID `json:"member_user_ids" validate:"required,min=1,max=499,dive"`
 }
 
 type AddMembersRequest struct {

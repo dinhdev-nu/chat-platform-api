@@ -119,10 +119,12 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 
 	name := req.Name
 	arg := &model.Conversation{
-		ID:        convID,
-		Type:      model.ConversationType(req.Type),
-		Name:      &name,
-		CreatedBy: currentUID,
+		ID:          convID,
+		Type:        model.ConversationType(req.Type),
+		Name:        &name,
+		AvatarURL:   req.AvatarURL,
+		Description: req.Description,
+		CreatedBy:   currentUID,
 	}
 	if err := s.roomRepo.CreateConversation(ctx, arg); err != nil {
 		return nil, ae.Internal(err)

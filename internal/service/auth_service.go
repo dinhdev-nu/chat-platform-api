@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -159,7 +161,9 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		return nil, ar.Internal(err)
 	}
 	if jti != nil {
-		g.Session.Revoke(ctx, jti)
+		if err := g.Session.Revoke(ctx, jti); err != nil {
+			return nil, ar.Internal(err)
+		}
 	}
 	jti, err = crypto.NewUUIDv7Bytes()
 	if err != nil {
@@ -227,10 +231,10 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 
 func (s *AuthService) Logout(ctx context.Context, jti []byte) error {
 	if err := g.Session.Revoke(ctx, jti); err != nil {
-		global.Logger.Warn("Failed to revoke session", zap.Error(err))
+		return ar.Internal(err)
 	}
 	if err := s.tokenRepo.DeleteByJTI(ctx, jti); err != nil {
-		return ar.Internal(err)
+		global.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
 	}
 
 	return nil
@@ -250,28 +254,21 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 	if err != nil {
 		return nil, nil, ar.Internal(err)
 	}
+	if hexUserID == "" {
+		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+	}
 
-	var userID []byte
-	if hexUserID != "" {
-		// HIT
-		userID, err = crypto.ParseHexToBytes(hexUserID)
-		if err != nil {
-			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 3")
-		}
-	} else {
-		// MISS
-		tokenDB, err := s.tokenRepo.FindByJTI(ctx, jti)
-		if err != nil {
-			return nil, nil, ar.Internal(err)
-		}
-		if tokenDB == nil {
-			return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 4")
-		}
-		userID = tokenDB.UserID
+	userID, err := crypto.ParseHexToBytes(hexUserID)
+	if err != nil {
+		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token cache")
+	}
 
-		// warm up cache
-		ttl := time.Until(tokenDB.ExpiresAt)
-		g.Session.Set(ctx, jti, userID, ttl)
+	claimUserID, err := claims.UserIDBytes()
+	if err != nil {
+		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token claims")
+	}
+	if !bytes.Equal(claimUserID, userID) {
+		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token owner")
 	}
 
 	// Kiểm tra user status từ cache để có thể revoke token ngay khi user bị suspend/deactivate
@@ -309,10 +306,17 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		return nil, nil, ar.New(ar.ErrForbidden, "User account is not active")
 	}
 
-	if user.LastSeenAt == nil || user.LastSeenAt.Before(time.Now().Add(-10*time.Minute)) {
+	lastUsedKey := fmt.Sprintf("token:last_used:%s", hex.EncodeToString(jti))
+	shouldUpdate, err := g.RedisClient.SetNX(ctx, lastUsedKey, 1, 10*time.Minute).Result()
+	if err != nil {
+		g.Logger.Warn("Failed to set token last_used throttle", zap.Error(err))
+	}
+	if shouldUpdate {
 		go func() {
 			bgCtx := context.Background()
-			s.tokenRepo.UpdateLastUsed(bgCtx, jti)
+			if err := s.tokenRepo.UpdateLastUsed(bgCtx, jti); err != nil {
+				g.Logger.Warn("Failed to update token last_used_at", zap.Error(err))
+			}
 		}()
 	}
 
