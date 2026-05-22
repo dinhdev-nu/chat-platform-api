@@ -2,7 +2,9 @@ version: "2"
 sql:
   - engine: "mysql"
     queries: "./internal/infrastructure/mysql/query"
-    schema:  "./internal/infrastructure/mysql/migrations"
+    schema:  
+      - "./internal/infrastructure/mysql/migrations"
+      - "./internal/infrastructure/mysql/schema"
     gen:
       go:
         package:                      "sqlc"

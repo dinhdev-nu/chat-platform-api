@@ -37,6 +37,7 @@ func (r *roomRepo) UpdateLastReadAt(ctx context.Context, convID, userID []byte, 
 		ConversationID: convID,
 		UserID:         userID,
 		LastReadAt:     cursorTS,
+		LastReadAt_2:   cursorTS,
 	})
 	if err != nil {
 		return fmt.Errorf("roomRepo.UpdateLastReadAt: %w", err)
@@ -212,18 +213,27 @@ func (r *roomRepo) BatchInsertConversationMembers(ctx context.Context, membs []*
 	return nil
 }
 
-func appendConv(id []byte, cType int8, name, avatar sql.NullString, lastMsgID sql.NullString, lastMsgText sql.NullString, lastAct *time.Time, created, updated time.Time, role int8, isMuted bool) (*model.ConversationListRow, error) {
+func appendConv(id []byte, cType int8, name, avatar any, lastMsgID sql.NullString, lastMsgText sql.NullString, lastAct *time.Time, created, updated time.Time, role int8, isMuted bool) (*model.ConversationListRow, error) {
 	msgID, err := nullStringToByte(lastMsgID)
 	if err != nil {
 		return nil, err
 	}
+	namePtr, err := nullableStringValueToPointer(name)
+	if err != nil {
+		return nil, err
+	}
+	avatarPtr, err := nullableStringValueToPointer(avatar)
+	if err != nil {
+		return nil, err
+	}
+
 	return &model.ConversationListRow{
 
 		Conversation: model.Conversation{
 			ID:              id,
 			Type:            model.ConversationType(cType),
-			Name:            nullStringToStringPointer(name),
-			AvatarURL:       nullStringToStringPointer(avatar),
+			Name:            namePtr,
+			AvatarURL:       avatarPtr,
 			LastMessageID:   msgID,
 			LastMessageText: nullStringToStringPointer(lastMsgText),
 			LastActivityAt:  lastAct,
@@ -265,4 +275,20 @@ func nullStringToStringPointer(ns sql.NullString) *string {
 		return &ns.String
 	}
 	return nil
+}
+
+func nullableStringValueToPointer(val any) (*string, error) {
+	switch v := val.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return &v, nil
+	case []byte:
+		s := string(v)
+		return &s, nil
+	case sql.NullString:
+		return nullStringToStringPointer(v), nil
+	default:
+		return nil, fmt.Errorf("unsupported nullable string value type %T", val)
+	}
 }

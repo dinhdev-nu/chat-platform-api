@@ -120,3 +120,23 @@ type MessageStatus struct {
 	// [FIX #2] Thời điểm đọc — record tồn tại = đã đọc, không có record = chưa đọc
 	ReadAt time.Time
 }
+
+// Tài khoản người dùng — xác thực Email OTP
+type User struct {
+	// UUID v7 dạng BINARY(16) — encode: UNHEX(REPLACE(uuid,'-',''))
+	ID []byte
+	// Tên hiển thị — UNIQUE để tìm bạn
+	Username string
+	// Email đăng nhập qua OTP
+	Email string
+	// S3/CDN URL ảnh đại diện
+	AvatarUrl sql.NullString
+	// Giới thiệu bản thân
+	Bio sql.NullString
+	// 1=active 2=suspended 3=deactivated — TINYINT thay ENUM tránh ALTER TABLE lock
+	Status int8
+	// Cập nhật khi WebSocket disconnect
+	LastSeenAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
