@@ -215,6 +215,28 @@ func (r *userRepo) FindByID(ctx context.Context, id []byte) (*model.User, error)
 	return g.ToDomain(), nil
 }
 
+func (r *userRepo) FindActiveIDs(ctx context.Context, ids [][]byte) (map[string]bool, error) {
+	found := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return found, nil
+	}
+
+	var rows []struct {
+		ID []byte `gorm:"column:id"`
+	}
+	if err := r.db.WithContext(ctx).
+		Model(&gormmodel.User{}).
+		Select("id").
+		Where("id IN ? AND status = ?", ids, gormmodel.UserStatusActive).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("userRepo.FindActiveIDs: %w", err)
+	}
+	for _, row := range rows {
+		found[string(row.ID)] = true
+	}
+	return found, nil
+}
+
 func (r *userRepo) FindByEmail(ctx context.Context, email string) (*model.User, error) {
 	var g gormmodel.User
 	err := r.db.WithContext(ctx).Where("email = ?", email).First(&g).Error

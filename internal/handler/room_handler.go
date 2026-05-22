@@ -76,7 +76,11 @@ func (h *RoomHandler) ListConversations(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	limitStr := c.DefaultQuery("limit", "20")
-	limit, _ := strconv.Atoi(limitStr)
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		_ = c.Error(ae.ValidationError("Invalid limit parameter"))
+		return
+	}
 	convs, err := h.rs.ListConversations(c.Request.Context(), user.ID, &cursor, limit)
 	if err != nil {
 		_ = c.Error(err)

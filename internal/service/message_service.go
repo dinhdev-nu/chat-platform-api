@@ -165,10 +165,10 @@ func (s *MessageService) afterSend(ctx context.Context, msg *model.Message) {
 	}
 	if len(allOffMembers) > 0 {
 		go func(hit bool) {
+			bg := context.Background()
+			_ = cache.BatchIncrUnread(bg, allOffMembers, msg.ConversationID)
 			if hit {
-				_ = cache.RefreshTTL(context.Background(), msg.ConversationID)
-			} else {
-				_ = cache.BatchIncrUnread(context.Background(), allOffMembers, msg.ConversationID)
+				_ = cache.RefreshTTL(bg, msg.ConversationID)
 			}
 		}(cacheHit)
 	}
@@ -201,10 +201,11 @@ func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([
 func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
 	isMember, hit, err := cache.IsMember(ctx, convID, senderUID)
 	if err == nil && hit {
-		if !isMember {
-			return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+		if isMember {
+			return nil
 		}
-		return nil
+		// Negative cache can be stale immediately after a member is added.
+		// Verify against DB before denying access.
 	}
 
 	// Fallback db

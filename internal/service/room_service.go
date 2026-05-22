@@ -42,6 +42,10 @@ func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageReposi
 }
 
 func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []byte) (*model.Conversation, bool, error) {
+	if bytes.Equal(currentUID, targetUserID) {
+		return nil, false, ae.New(ae.ErrInvalidInput, "Cannot create DM with yourself")
+	}
+
 	// Ko cần cache User Status
 	// 1/ Verify target user exists
 	targetUser, err := s.userRepo.FindByID(ctx, targetUserID)
@@ -112,15 +116,56 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 }
 
 func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dto.CreateGroupRequest) (*model.Conversation, error) {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, ae.ValidationError("Group name is required")
+	}
+
+	convType := model.ConversationType(req.Type)
+	if convType != model.ConvTypeGroup && convType != model.ConvTypeChannel {
+		return nil, ae.ValidationError("Invalid conversation type")
+	}
+
+	memberIDs := make([][]byte, 0, len(req.MemberUIDs))
+	seen := make(map[string]struct{}, len(req.MemberUIDs)+1)
+	seen[string(currentUID)] = struct{}{}
+	for _, mID := range req.MemberUIDs {
+		memberID := []byte(mID)
+		if len(memberID) != 16 {
+			return nil, ae.ValidationError("Invalid member user ID")
+		}
+		if bytes.Equal(memberID, currentUID) {
+			return nil, ae.New(ae.ErrInvalidInput, "Creator must not be included in member_user_ids")
+		}
+		key := string(memberID)
+		if _, ok := seen[key]; ok {
+			return nil, ae.New(ae.ErrInvalidInput, "Duplicate member_user_ids are not allowed")
+		}
+		seen[key] = struct{}{}
+		memberIDs = append(memberIDs, memberID)
+	}
+	if len(memberIDs) == 0 {
+		return nil, ae.ValidationError("member_user_ids is required")
+	}
+
+	activeIDs, err := s.userRepo.FindActiveIDs(ctx, memberIDs)
+	if err != nil {
+		return nil, ae.Internal(err)
+	}
+	for _, memberID := range memberIDs {
+		if !activeIDs[string(memberID)] {
+			return nil, ae.New(ae.ErrUserNotFound, "User not found")
+		}
+	}
+
 	convID, err := crypto.NewUUIDv7Bytes()
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
 
-	name := req.Name
 	arg := &model.Conversation{
 		ID:          convID,
-		Type:        model.ConversationType(req.Type),
+		Type:        convType,
 		Name:        &name,
 		AvatarURL:   req.AvatarURL,
 		Description: req.Description,
@@ -131,12 +176,9 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 	}
 
 	// Insert Members
-	allMemberIDs := make([][]byte, 0, len(req.MemberUIDs)+1)
+	allMemberIDs := make([][]byte, 0, len(memberIDs)+1)
 	allMemberIDs = append(allMemberIDs, currentUID)
-
-	for _, mID := range req.MemberUIDs {
-		allMemberIDs = append(allMemberIDs, mID)
-	}
+	allMemberIDs = append(allMemberIDs, memberIDs...)
 
 	margs := make([]*model.ConversationMember, 0, len(allMemberIDs))
 	for i, memberID := range allMemberIDs {
@@ -246,6 +288,7 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 			c.UnreadCount = unread
 		} else {
 			unread, _ := s.msgRepo.GetUnreadCountByWatermark(ctx, uid, c.ID)
+			c.UnreadCount = unread
 			go func(cid []byte, uid []byte, count int64) {
 				_ = cache.SetUnread(context.Background(), uid, cid, count)
 			}(c.ID, uid, unread)
@@ -257,8 +300,11 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 	if hasMore {
 		// Tạo cursor cho lần gọi tiếp theo
 		lastConv := convs[len(convs)-1]
-		encoded := encodeCursor(*lastConv.LastActivityAt, lastConv.ID)
-		nextCursor = encoded
+		if lastConv.LastActivityAt != nil {
+			nextCursor = encodeCursor(*lastConv.LastActivityAt, lastConv.ID)
+		} else {
+			hasMore = false
+		}
 	}
 
 	return &ResultPage[*model.ConversationListRow]{
@@ -269,10 +315,17 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 }
 
 func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUID []byte, actorName string) error {
+	if bytes.Equal(actorUID, targetUID) {
+		return ae.New(ae.ErrInvalidInput, "Cannot add yourself")
+	}
+
 	// 1/Kiểm tra actor có phải admin/owner ko
 	actorRole, err := s.roomRepo.GetMemberRole(ctx, convUID, actorUID)
 	if err != nil {
 		return ae.Internal(err)
+	}
+	if actorRole == 0 {
+		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
 	}
 	if actorRole != model.RoleAdmin && actorRole != model.RoleOwner {
 		return ae.Forbidden("Only admins can add members")
@@ -293,13 +346,13 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		Role:           model.RoleMember,
 	}
 	// ignore khi đã là member err == nil
-	if err := s.roomRepo.InsertConversationMember(ctx, arg); err != nil {
+	err = s.roomRepo.InsertConversationMember(ctx, arg)
+	if err != nil {
 		return ae.Internal(err)
 	}
-	// Warm member cache
-	go func() {
-		_ = cache.AddMember(context.Background(), convUID, targetUID)
-	}()
+	if err := cache.AddMember(ctx, convUID, targetUID); err != nil {
+		_ = cache.InvalidateMembers(context.Background(), convUID)
+	}
 	// Insert system message: "X added Y"
 	go func() {
 		bg := context.Background()
@@ -335,37 +388,44 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 }
 
 func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte, actorName string) error {
+	isSelf := bytes.Equal(actorUID, targetUID)
+
 	// 1/Kiểm tra actor có phải admin/owner ko
 	actorRole, err := s.roomRepo.GetMemberRole(ctx, convID, actorUID)
 	if err != nil {
 		return ae.Internal(err)
 	}
-	if actorRole != model.RoleAdmin && actorRole != model.RoleOwner {
+	if actorRole == 0 {
+		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+	}
+	if !isSelf && actorRole != model.RoleAdmin && actorRole != model.RoleOwner {
 		return ae.Forbidden("Only admins can remove members")
 	}
 
 	// 2/ Kiểm tra target user exists
 	targetName := actorName
-	isSelf := bytes.Equal(actorUID, targetUID)
 	if !isSelf {
 		targetUser, err := s.userRepo.FindByID(ctx, targetUID)
 		if err != nil {
 			return ae.Internal(err)
 		}
-		if targetUser == nil || !targetUser.IsActive() {
+		if targetUser == nil {
 			return ae.New(ae.ErrUserNotFound, "User not found")
 		}
 		targetName = targetUser.Username
 	}
 
 	// 3/ Xóa member
-	if err := s.roomRepo.DeleteConversationMember(ctx, convID, targetUID); err != nil {
+	err = s.roomRepo.DeleteConversationMember(ctx, convID, targetUID)
+	if err != nil {
 		return ae.Internal(err)
 	}
 
 	go func() {
 		bg := context.Background()
-		_ = cache.RemoveMember(bg, convID, targetUID)
+		if err := cache.RemoveMember(bg, convID, targetUID); err != nil {
+			_ = cache.InvalidateMembers(bg, convID)
+		}
 		_ = cache.DeleteUnread(bg, targetUID, convID)
 	}()
 
