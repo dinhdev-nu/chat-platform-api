@@ -44,10 +44,11 @@ func (r *roomRepo) UpdateLastReadAt(ctx context.Context, convID, userID []byte, 
 	return nil
 }
 
-func (r *roomRepo) UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte) error {
+func (r *roomRepo) UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string) error {
 	err := r.q.UpdateConversationLastActivity(ctx, sqlc.UpdateConversationLastActivityParams{
-		LastMessageID: ByteToNullString(lastMsgID),
-		ID:            convID,
+		LastMessageID:   ByteToNullString(lastMsgID),
+		LastMessageText: StringPtrToNullString(lastMsgText),
+		ID:              convID,
 	})
 	if err != nil {
 		return fmt.Errorf("roomRepo.UpdateConversationLastActivity: %w", err)
@@ -114,7 +115,7 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 			return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 		}
 		for _, row := range rows {
-			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
+			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastMessageText, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
 			if err != nil {
 				return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 			}
@@ -132,7 +133,7 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 			return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 		}
 		for _, row := range rows {
-			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
+			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastMessageText, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
 			if err != nil {
 				return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 			}
@@ -211,7 +212,7 @@ func (r *roomRepo) BatchInsertConversationMembers(ctx context.Context, membs []*
 	return nil
 }
 
-func appendConv(id []byte, cType int8, name, avatar sql.NullString, lastMsgID sql.NullString, lastAct *time.Time, created, updated time.Time, role int8, isMuted bool) (*model.ConversationListRow, error) {
+func appendConv(id []byte, cType int8, name, avatar sql.NullString, lastMsgID sql.NullString, lastMsgText sql.NullString, lastAct *time.Time, created, updated time.Time, role int8, isMuted bool) (*model.ConversationListRow, error) {
 	msgID, err := nullStringToByte(lastMsgID)
 	if err != nil {
 		return nil, err
@@ -219,14 +220,15 @@ func appendConv(id []byte, cType int8, name, avatar sql.NullString, lastMsgID sq
 	return &model.ConversationListRow{
 
 		Conversation: model.Conversation{
-			ID:             id,
-			Type:           model.ConversationType(cType),
-			Name:           nullStringToStringPointer(name),
-			AvatarURL:      nullStringToStringPointer(avatar),
-			LastMessageID:  msgID,
-			LastActivityAt: lastAct,
-			CreatedAt:      created,
-			UpdatedAt:      updated,
+			ID:              id,
+			Type:            model.ConversationType(cType),
+			Name:            nullStringToStringPointer(name),
+			AvatarURL:       nullStringToStringPointer(avatar),
+			LastMessageID:   msgID,
+			LastMessageText: nullStringToStringPointer(lastMsgText),
+			LastActivityAt:  lastAct,
+			CreatedAt:       created,
+			UpdatedAt:       updated,
 		},
 		Role:        model.MemberRole(role),
 		IsMuted:     isMuted,

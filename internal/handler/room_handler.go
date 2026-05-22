@@ -76,7 +76,11 @@ func (h *RoomHandler) ListConversations(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	limitStr := c.DefaultQuery("limit", "20")
-	limit, _ := strconv.Atoi(limitStr)
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		_ = c.Error(ae.ValidationError("Invalid limit parameter"))
+		return
+	}
 	convs, err := h.rs.ListConversations(c.Request.Context(), user.ID, &cursor, limit)
 	if err != nil {
 		_ = c.Error(err)
@@ -179,16 +183,17 @@ func convToCreateDTO(c *model.Conversation) dto.CreateRoomResponse {
 	}
 
 	return dto.CreateRoomResponse{
-		ID:             hex.EncodeToString(c.ID),
-		Type:           int8(c.Type),
-		Name:           name,
-		Description:    desc,
-		AvatarURL:      avatar,
-		CreateBy:       createdBy,
-		LastMessageID:  lastMsg,
-		LastActivityAt: lastAct,
-		CreatedAt:      c.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      c.UpdatedAt.Format(time.RFC3339),
+		ID:              hex.EncodeToString(c.ID),
+		Type:            int8(c.Type),
+		Name:            name,
+		Description:     desc,
+		AvatarURL:       avatar,
+		CreateBy:        createdBy,
+		LastMessageID:   lastMsg,
+		LastMessageText: c.LastMessageText,
+		LastActivityAt:  lastAct,
+		CreatedAt:       c.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       c.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -196,18 +201,19 @@ func convRowToListDTO(rw *model.ConversationListRow) dto.ConversationListItem {
 	c := rw.Conversation
 	base := convToCreateDTO(&c)
 	return dto.ConversationListItem{
-		ID:             base.ID,
-		Type:           base.Type,
-		Name:           base.Name,
-		Description:    base.Description,
-		AvatarURL:      base.AvatarURL,
-		CreateBy:       base.CreateBy,
-		LastMessageID:  base.LastMessageID,
-		LastActivityAt: base.LastActivityAt,
-		CreatedAt:      base.CreatedAt,
-		UpdatedAt:      base.UpdatedAt,
-		Role:           int8(rw.Role),
-		IsMuted:        rw.IsMuted,
-		UnreadCount:    rw.UnreadCount,
+		ID:              base.ID,
+		Type:            base.Type,
+		Name:            base.Name,
+		Description:     base.Description,
+		AvatarURL:       base.AvatarURL,
+		CreateBy:        base.CreateBy,
+		LastMessageID:   base.LastMessageID,
+		LastMessageText: base.LastMessageText,
+		LastActivityAt:  base.LastActivityAt,
+		CreatedAt:       base.CreatedAt,
+		UpdatedAt:       base.UpdatedAt,
+		Role:            int8(rw.Role),
+		IsMuted:         rw.IsMuted,
+		UnreadCount:     rw.UnreadCount,
 	}
 }

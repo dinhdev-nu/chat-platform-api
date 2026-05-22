@@ -27,7 +27,39 @@ func (c Conversation) ToDomain() *model.Conversation {
 	if c.LastMessageID.Valid {
 		cm.LastMessageID = []byte(c.LastMessageID.String)
 	}
+	if c.LastMessageText.Valid {
+		cm.LastMessageText = &c.LastMessageText.String
+	}
 
+	return cm
+}
+
+func (r GetConversationByIDRow) ToDomain() *model.Conversation {
+	cm := &model.Conversation{
+		ID:             r.ID,
+		Type:           model.ConversationType(r.Type),
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
+		LastActivityAt: r.LastActivityAt,
+	}
+	if r.Name.Valid {
+		cm.Name = &r.Name.String
+	}
+	if r.AvatarUrl.Valid {
+		cm.AvatarURL = &r.AvatarUrl.String
+	}
+	if r.Description.Valid {
+		cm.Description = &r.Description.String
+	}
+	if r.CreatedBy.Valid {
+		cm.CreatedBy = []byte(r.CreatedBy.String)
+	}
+	if r.LastMessageID.Valid {
+		cm.LastMessageID = []byte(r.LastMessageID.String)
+	}
+	if r.LastMessageText.Valid {
+		cm.LastMessageText = &r.LastMessageText.String
+	}
 	return cm
 }
 

@@ -68,11 +68,10 @@ func (r *userTokenRepo) GetOldestJTIByUserIDBeyondLimit(ctx context.Context, use
 
 	err := r.db.WithContext(ctx).
 		Model(&gormmodel.UserToken{}).
-		Select("jti").
 		Where("user_id = ?", userID).
 		Order("last_used_at DESC").
 		Offset(limit).
-		Find("jti", &jtis).Error
+		Pluck("jti", &jtis).Error
 
 	if err != nil {
 		return nil, fmt.Errorf("userTokenRepo.GetOldestJTIByUserIDBeyondLimit: %w", err)

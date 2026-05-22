@@ -8,7 +8,6 @@ import (
 
 // Inbound event ( client -> server ) types
 const (
-	InboundPing    = "ping"    // Heartbeat
 	InboundTyping  = "typing"  // User is typing
 	InboundViewing = "viewing" // User is viewing a conversation
 	InboundLeft    = "left"    // User left a conversation
@@ -55,7 +54,6 @@ type sysEvent struct {
 }
 
 const (
-	OutboundPong           = "pong"     // Response to ping
 	OutboundTyping         = "typing"   // Notify others that user is typing
 	OutboundPresence       = "presence" // Notify others about user presence (online/offline)
 	OutboundMessageNew     = "message.new"

@@ -55,15 +55,29 @@ func (q *Queries) DeleteConversationMember(ctx context.Context, arg DeleteConver
 
 const getConversationByID = `-- name: GetConversationByID :one
 SELECT id, type, name, avatar_url, description, created_by,
-       last_message_id, last_activity_at, created_at, updated_at
+  last_message_id, last_message_text, last_activity_at, created_at, updated_at
 FROM conversations
 WHERE id = ?
 LIMIT 1
 `
 
-func (q *Queries) GetConversationByID(ctx context.Context, id []byte) (Conversation, error) {
+type GetConversationByIDRow struct {
+	ID              []byte
+	Type            int8
+	Name            sql.NullString
+	AvatarUrl       sql.NullString
+	Description     sql.NullString
+	CreatedBy       sql.NullString
+	LastMessageID   sql.NullString
+	LastMessageText sql.NullString
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) GetConversationByID(ctx context.Context, id []byte) (GetConversationByIDRow, error) {
 	row := q.db.QueryRowContext(ctx, getConversationByID, id)
-	var i Conversation
+	var i GetConversationByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Type,
@@ -72,6 +86,7 @@ func (q *Queries) GetConversationByID(ctx context.Context, id []byte) (Conversat
 		&i.Description,
 		&i.CreatedBy,
 		&i.LastMessageID,
+		&i.LastMessageText,
 		&i.LastActivityAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -226,9 +241,9 @@ func (q *Queries) InsertConversationMember(ctx context.Context, arg InsertConver
 
 const listConversationsFirstPage = `-- name: ListConversationsFirstPage :many
 SELECT
-    c.id, c.type, c.name, c.avatar_url,
-    c.last_message_id, c.last_activity_at, c.created_at, c.updated_at,
-    cm.role, cm.is_muted
+  c.id, c.type, c.name, c.avatar_url,
+  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+  cm.role, cm.is_muted
 FROM conversations c
 INNER JOIN conversation_members cm
     ON cm.conversation_id = c.id AND cm.user_id = ?
@@ -242,16 +257,17 @@ type ListConversationsFirstPageParams struct {
 }
 
 type ListConversationsFirstPageRow struct {
-	ID             []byte
-	Type           int8
-	Name           sql.NullString
-	AvatarUrl      sql.NullString
-	LastMessageID  sql.NullString
-	LastActivityAt *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Role           int8
-	IsMuted        bool
+	ID              []byte
+	Type            int8
+	Name            sql.NullString
+	AvatarUrl       sql.NullString
+	LastMessageID   sql.NullString
+	LastMessageText sql.NullString
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Role            int8
+	IsMuted         bool
 }
 
 func (q *Queries) ListConversationsFirstPage(ctx context.Context, arg ListConversationsFirstPageParams) ([]ListConversationsFirstPageRow, error) {
@@ -269,6 +285,7 @@ func (q *Queries) ListConversationsFirstPage(ctx context.Context, arg ListConver
 			&i.Name,
 			&i.AvatarUrl,
 			&i.LastMessageID,
+			&i.LastMessageText,
 			&i.LastActivityAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -290,9 +307,9 @@ func (q *Queries) ListConversationsFirstPage(ctx context.Context, arg ListConver
 
 const listConversationsNextPage = `-- name: ListConversationsNextPage :many
 SELECT
-    c.id, c.type, c.name, c.avatar_url,
-    c.last_message_id, c.last_activity_at, c.created_at, c.updated_at,
-    cm.role, cm.is_muted
+  c.id, c.type, c.name, c.avatar_url,
+  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+  cm.role, cm.is_muted
 FROM conversations c
 INNER JOIN conversation_members cm
     ON cm.conversation_id = c.id AND cm.user_id = ? 
@@ -310,16 +327,17 @@ type ListConversationsNextPageParams struct {
 }
 
 type ListConversationsNextPageRow struct {
-	ID             []byte
-	Type           int8
-	Name           sql.NullString
-	AvatarUrl      sql.NullString
-	LastMessageID  sql.NullString
-	LastActivityAt *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Role           int8
-	IsMuted        bool
+	ID              []byte
+	Type            int8
+	Name            sql.NullString
+	AvatarUrl       sql.NullString
+	LastMessageID   sql.NullString
+	LastMessageText sql.NullString
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Role            int8
+	IsMuted         bool
 }
 
 func (q *Queries) ListConversationsNextPage(ctx context.Context, arg ListConversationsNextPageParams) ([]ListConversationsNextPageRow, error) {
@@ -343,6 +361,7 @@ func (q *Queries) ListConversationsNextPage(ctx context.Context, arg ListConvers
 			&i.Name,
 			&i.AvatarUrl,
 			&i.LastMessageID,
+			&i.LastMessageText,
 			&i.LastActivityAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -364,18 +383,19 @@ func (q *Queries) ListConversationsNextPage(ctx context.Context, arg ListConvers
 
 const updateConversationLastActivity = `-- name: UpdateConversationLastActivity :exec
 UPDATE conversations
-SET last_message_id = ?, last_activity_at = NOW(3), updated_at = NOW(3)
+SET last_message_id = ?, last_message_text = ?, last_activity_at = NOW(3), updated_at = NOW(3)
 WHERE id = ?
 `
 
 type UpdateConversationLastActivityParams struct {
-	LastMessageID sql.NullString
-	ID            []byte
+	LastMessageID   sql.NullString
+	LastMessageText sql.NullString
+	ID              []byte
 }
 
 // Gọi bởi Kafka worker async sau khi gửi tin nhắn.
 func (q *Queries) UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error {
-	_, err := q.db.ExecContext(ctx, updateConversationLastActivity, arg.LastMessageID, arg.ID)
+	_, err := q.db.ExecContext(ctx, updateConversationLastActivity, arg.LastMessageID, arg.LastMessageText, arg.ID)
 	return err
 }
 

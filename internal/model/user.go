@@ -35,6 +35,15 @@ type User struct {
 	UpdatedAt  time.Time
 }
 
+type UserProfileUpdate struct {
+	Name      *string
+	AvatarURL *string
+	Bio       *string
+	HasName   bool
+	HasAvatar bool
+	HasBio    bool
+}
+
 func (u *User) IsActive() bool {
 	return u.Status == UserStatusActive
 }
@@ -81,6 +90,7 @@ type OAuthAccount struct {
 }
 
 type ContactStatus int8
+type ContactRequestResult string
 
 const (
 	ContactStatusPending  ContactStatus = 1 // Chờ xác nhận
@@ -88,28 +98,33 @@ const (
 	ContactStatusBlocked  ContactStatus = 3 // Đã chặn
 )
 
+const (
+	ContactRequestResultPending  ContactRequestResult = "pending"
+	ContactRequestResultAccepted ContactRequestResult = "accepted"
+)
+
 const TableNameGoDBUserContact = "user_contacts"
 
 // UserContact ánh xạ bảng user_contacts
 type UserContact struct {
-	ID        uint64        `gorm:"column:id;primaryKey;autoIncrement"                             json:"id"`
-	UserID    []byte        `gorm:"column:user_id;type:binary(16);not null;index:uq_contact_pair,unique,priority:1;index:idx_contact_status,priority:1" json:"user_id"`
-	ContactID []byte        `gorm:"column:contact_id;type:binary(16);not null;index:uq_contact_pair,unique,priority:2;index:idx_contact_id"            json:"contact_id"`
-	Status    ContactStatus `gorm:"column:status;type:tinyint;not null;default:1;index:idx_contact_status,priority:2"                                  json:"status"`
-	CreatedAt time.Time     `gorm:"column:created_at;not null;autoCreateTime"                      json:"created_at"`
-	UpdatedAt time.Time     `gorm:"column:updated_at;not null;autoUpdateTime"                      json:"updated_at"`
+	ID        uint64
+	UserID    []byte
+	ContactID []byte
+	Status    ContactStatus
+	CreatedAt time.Time
+	UpdatedAt time.Time
 
 	// Associations
-	User    *User `gorm:"foreignKey:UserID;references:ID;constraint:OnDelete:CASCADE"    json:"user,omitempty"`
-	Contact *User `gorm:"foreignKey:ContactID;references:ID;constraint:OnDelete:CASCADE" json:"contact,omitempty"`
+	User    *User
+	Contact *User
 }
 
 type SearchUser struct {
 	ID             string         `json:"id"`
 	Username       string         `json:"username"`
-	AvatarURL      *string        `json:"avatar_url"`
+	AvatarURL      *string        `json:"avatarUrl"`
 	Bio            *string        `json:"bio"`
-	LastSeenAt     *time.Time     `json:"last_seen_at"`
-	OutgoingStatus *ContactStatus `json:"outgoing_status,omitempty"`
-	IncomingStatus *ContactStatus `json:"incoming_status,omitempty"`
+	LastSeenAt     *time.Time     `json:"lastSeenAt"`
+	OutgoingStatus *ContactStatus `json:"outgoingStatus,omitempty"`
+	IncomingStatus *ContactStatus `json:"incomingStatus,omitempty"`
 }

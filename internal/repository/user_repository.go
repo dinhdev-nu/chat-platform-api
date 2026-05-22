@@ -8,9 +8,10 @@ import (
 
 type UserRepository interface {
 	FindByID(ctx context.Context, id []byte) (*model.User, error)
+	FindActiveIDs(ctx context.Context, ids [][]byte) (map[string]bool, error)
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	Create(ctx context.Context, user *model.User) error
-	Update(ctx context.Context, user *model.User, userID []byte) error
+	Update(ctx context.Context, userID []byte, update *model.UserProfileUpdate) error
 	UpdateLastSeenAt(ctx context.Context, userID []byte) error
 
 	SearchUsers(ctx context.Context, curUID []byte, q string, cursor *string, limit int) ([]*model.SearchUser, error)

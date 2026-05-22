@@ -45,9 +45,10 @@ type Conversation struct {
 	// Denormalized — NO FK — cập nhật qua Kafka worker
 	LastMessageID sql.NullString
 	// Sort danh sách conversation
-	LastActivityAt *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LastMessageText sql.NullString
 }
 
 // Thành viên trong hội thoại
@@ -118,17 +119,4 @@ type MessageStatus struct {
 	UserID []byte
 	// [FIX #2] Thời điểm đọc — record tồn tại = đã đọc, không có record = chưa đọc
 	ReadAt time.Time
-}
-
-// Danh bạ và trạng thái kết bạn
-type UserContact struct {
-	ID uint64
-	// Người gửi lời mời — FK → users.id
-	UserID []byte
-	// Người nhận lời mời — FK → users.id
-	ContactID []byte
-	// 1=pending 2=accepted 3=blocked
-	Status    int8
-	CreatedAt time.Time
-	UpdatedAt time.Time
 }

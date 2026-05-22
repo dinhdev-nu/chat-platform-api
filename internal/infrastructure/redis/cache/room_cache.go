@@ -76,6 +76,10 @@ func RefreshTTL(ctx context.Context, convID []byte) error {
 	return g.RedisClient.Expire(ctx, key, memberCacheTTL).Err()
 }
 
+func InvalidateMembers(ctx context.Context, convID []byte) error {
+	return g.RedisClient.Del(ctx, memberKey(convID)).Err()
+}
+
 var addMemberScript = redis.NewScript(`
     local key = KEYS[1]
     local member = ARGV[1]

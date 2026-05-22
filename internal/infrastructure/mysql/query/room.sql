@@ -11,7 +11,7 @@ LIMIT 1;
 
 -- name: GetConversationByID :one
 SELECT id, type, name, avatar_url, description, created_by,
-       last_message_id, last_activity_at, created_at, updated_at
+  last_message_id, last_message_text, last_activity_at, created_at, updated_at
 FROM conversations
 WHERE id = ?
 LIMIT 1;
@@ -29,9 +29,9 @@ VALUES (?, ?, ?);
 
 -- name: ListConversationsFirstPage :many
 SELECT
-    c.id, c.type, c.name, c.avatar_url,
-    c.last_message_id, c.last_activity_at, c.created_at, c.updated_at,
-    cm.role, cm.is_muted
+  c.id, c.type, c.name, c.avatar_url,
+  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+  cm.role, cm.is_muted
 FROM conversations c
 INNER JOIN conversation_members cm
     ON cm.conversation_id = c.id AND cm.user_id = ?
@@ -40,9 +40,9 @@ LIMIT ?;
 
 -- name: ListConversationsNextPage :many
 SELECT
-    c.id, c.type, c.name, c.avatar_url,
-    c.last_message_id, c.last_activity_at, c.created_at, c.updated_at,
-    cm.role, cm.is_muted
+  c.id, c.type, c.name, c.avatar_url,
+  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+  cm.role, cm.is_muted
 FROM conversations c
 INNER JOIN conversation_members cm
     ON cm.conversation_id = c.id AND cm.user_id = ? 
@@ -82,7 +82,7 @@ WHERE conversation_id = ?;
 -- name: UpdateConversationLastActivity :exec
 -- Gọi bởi Kafka worker async sau khi gửi tin nhắn.
 UPDATE conversations
-SET last_message_id = ?, last_activity_at = NOW(3), updated_at = NOW(3)
+SET last_message_id = ?, last_message_text = ?, last_activity_at = NOW(3), updated_at = NOW(3)
 WHERE id = ?;
 
 -- name: GetUserConversationIDs :many

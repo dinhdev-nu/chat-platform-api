@@ -16,16 +16,17 @@ const (
 )
 
 type Conversation struct {
-	ID             []byte
-	Type           ConversationType
-	Name           *string
-	AvatarURL      *string
-	Description    *string
-	CreatedBy      []byte // nil if creator deleted account
-	LastMessageID  []byte // nil if no messages yet
-	LastActivityAt *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              []byte
+	Type            ConversationType
+	Name            *string
+	AvatarURL       *string
+	Description     *string
+	CreatedBy       []byte // nil if creator deleted account
+	LastMessageID   []byte // nil if no messages yet
+	LastMessageText *string
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type ConversationMember struct {

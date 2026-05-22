@@ -49,12 +49,12 @@ func (s *SessionStore) Revoke(ctx context.Context, jti []byte) error {
 }
 
 func (s *SessionStore) WarmUser(ctx context.Context, userID []byte, payload string) error {
-	key := fmt.Sprintf(cacheUser, string(userID))
+	key := fmt.Sprintf(cacheUser, hex.EncodeToString(userID))
 	return s.client.Set(ctx, key, payload, cacheUserStatusTTL).Err()
 }
 
 func (s *SessionStore) GetUser(ctx context.Context, userID []byte) (string, error) {
-	key := fmt.Sprintf(cacheUser, string(userID))
+	key := fmt.Sprintf(cacheUser, hex.EncodeToString(userID))
 	val, err := s.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -66,6 +66,6 @@ func (s *SessionStore) GetUser(ctx context.Context, userID []byte) (string, erro
 }
 
 func (s *SessionStore) RevokeUser(ctx context.Context, userID []byte) error {
-	key := fmt.Sprintf(cacheUser, string(userID))
+	key := fmt.Sprintf(cacheUser, hex.EncodeToString(userID))
 	return s.client.Del(ctx, key).Err()
 }

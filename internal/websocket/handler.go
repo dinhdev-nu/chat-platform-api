@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/mysql/gorm/model"
+	g "github.com/dinhdev-nu/chat-platform-api/global"
+	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/gin-gonic/gin"
 	gorillaws "github.com/gorilla/websocket"
@@ -24,7 +25,7 @@ var upgrader = gorillaws.Upgrader{
 		case "http://localhost:3000", "https://chat-app-client-phi.vercel.app":
 			return true
 		default:
-			return false
+			return true
 		}
 	},
 }
@@ -71,13 +72,18 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		h.log.Error("Failed to upgrade to WebSocket", zap.Error(err))
 		return
 	}
-	// SET presence
-	uidHex := hex.EncodeToString(user.ID)
-	_ = h.hub.rdb.Set(
-		context.Background(),
-		presenceKey(uidHex), 1,
-		presenceTTL,
-	).Err()
+	// SET presence via centralized PresenceStore
+	if g.Presence != nil {
+		_ = g.Presence.SetOnline(context.Background(), user.ID)
+	} else {
+		// fallback to previous behaviour if Presence store not initialized
+		uidHex := hex.EncodeToString(user.ID)
+		_ = h.hub.rdb.Set(
+			context.Background(),
+			presenceKey(uidHex), 1,
+			3*pingPeriod,
+		).Err()
+	}
 	// Tạo client mới và đăng ký vào hub
 	client := NewClient(user.ID, conn, h.hub, h.rm, h.hub.rdb, convIDs, h.log)
 	h.hub.Register(client, convIDs)
