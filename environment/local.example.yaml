@@ -43,4 +43,13 @@ mail:
   password: yourpassword
   senderName: "Chat Platform API"
 
+cors:
+  allowedOrigins: ["http://localhost:3000"] # Cho phép tất cả các nguồn
+  allowedMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] # Các phương thức HTTP được phép
+  allowedHeaders: ["Origin", "Content-Type", "Authorization","Accept"] # Các header được phép
+  exposeHeaders: ["Content-Length", "X-Request-Id"] # Các header được phép hiển thị cho client
+  allowCredentials: true # Cho phép gửi cookie và thông tin xác thực
+  corsMaxAge: 3600 # Thời gian tối đa để trình duyệt cache kết quả preflight (tính bằng giây)
+
+
 

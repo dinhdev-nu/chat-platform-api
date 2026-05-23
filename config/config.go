@@ -22,6 +22,7 @@ type Config struct {
 	Logger LoggerConfig `mapstructure:"logger"`
 	Mail   MailConfig   `mapstructure:"mail"`
 	Jwt    JwtConfig    `mapstructure:"jwt"`
+	Cors   CorsConfig   `mapstructure:"cors"`
 }
 
 func Load() (*Config, error) {
@@ -89,6 +90,9 @@ func (c *Config) validate() error {
 	}
 	if c.Jwt.Secret == "" {
 		return fmt.Errorf("jwt secret must be specified")
+	}
+	if c.Cors.AllowedOrigins == nil {
+		return fmt.Errorf("cors allowed origins must be specified")
 	}
 	return nil
 }
