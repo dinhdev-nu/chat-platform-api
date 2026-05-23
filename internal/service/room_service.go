@@ -501,7 +501,7 @@ func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convI
 				if err != nil {
 					return 0, err
 				}
-				if ex > 1 {
+				if ex > 0 {
 					break
 				}
 			}

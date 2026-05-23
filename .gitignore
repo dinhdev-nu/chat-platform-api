@@ -2,6 +2,8 @@
 /logs
 
 .gocache
+.gocache-check
+
 .env
 local.yaml
 production.yaml

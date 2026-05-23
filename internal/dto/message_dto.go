@@ -1,17 +1,19 @@
 package dto
 
+import "github.com/dinhdev-nu/chat-platform-api/pkg/types"
+
 type SendMessageRequest struct {
 	Content     string              `json:"content" binding:"omitempty,max=65536"`
 	Type        int8                `json:"type" binding:"required,min=1,max=5"`
-	ParentID    []byte              `json:"parent_id,omitempty" binding:"omitempty,len=32"`
-	Attachments []AttachmentRequest `json:"attachments,omitempty" binding:"dive"`
+	ParentID    types.HexID         `json:"parent_id,omitempty" binding:"omitempty"`
+	Attachments []AttachmentRequest `json:"attachments,omitempty" binding:"omitempty,max=10,dive"`
 }
 type EditMessageRequest struct {
-	Content string `json:"content" binding:"omitempty,max=65536"`
+	Content string `json:"content" binding:"required,min=1,max=65536"`
 }
 
-type TogglePinRequest struct {
-	Emoji string `json:"content" binding:"required,min=1,max=65536"`
+type ToggleReactionRequest struct {
+	Emoji string `json:"emoji" binding:"required,min=1,max=10"`
 }
 
 type AttachmentRequest struct {
@@ -25,7 +27,7 @@ type AttachmentRequest struct {
 }
 
 type MarkAsReadRequest struct {
-	LastReadMsgID []byte `json:"last_read_msg_id" binding:"required,len=32"`
+	LastReadMsgID types.HexID `json:"last_read_msg_id" binding:"required"`
 }
 
 // Response DTOs
