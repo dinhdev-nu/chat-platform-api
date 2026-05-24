@@ -53,20 +53,24 @@ type MessageReactionResponse struct {
 }
 
 type MessageResponse struct {
-	ID               string                    `json:"id"`
-	ConversationID   string                    `json:"conversation_id"`
-	SenderID         string                    `json:"sender_id"`
-	ParentID         *string                   `json:"parent_id,omitempty"`
-	Type             int8                      `json:"type"`
-	Content          *string                   `json:"content,omitempty"`
-	ContentEncrypted bool                      `json:"content_encrypted"`
-	Iv               *string                   `json:"iv,omitempty"`
-	Seq              uint64                    `json:"seq"`
-	IsEdited         bool                      `json:"is_edited"`
-	IsDeleted        bool                      `json:"is_deleted"`
-	DeletedAt        *string                   `json:"deleted_at,omitempty"`
-	CreatedAt        string                    `json:"created_at"`
-	UpdatedAt        string                    `json:"updated_at"`
-	Attachments      []AttachmentResponse      `json:"attachments,omitempty"`
-	Reactions        []MessageReactionResponse `json:"reactions,omitempty"`
+	ID               string  `json:"id"`
+	ConversationID   string  `json:"conversation_id"`
+	SenderID         string  `json:"sender_id"`
+	ParentID         *string `json:"parent_id,omitempty"`
+	Type             int8    `json:"type"`
+	Content          *string `json:"content,omitempty"`
+	ContentEncrypted bool    `json:"content_encrypted"`
+	Iv               *string `json:"iv,omitempty"`
+	Seq              uint64  `json:"seq"`
+	IsEdited         bool    `json:"is_edited"`
+	IsDeleted        bool    `json:"is_deleted"`
+	DeletedAt        *string `json:"deleted_at,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+
+	SenderName      string  `json:"sender_name"`
+	SenderAvatarURL *string `json:"sender_avatar_url,omitempty"`
+
+	Attachments []AttachmentResponse      `json:"attachments,omitempty"`
+	Reactions   []MessageReactionResponse `json:"reactions,omitempty"`
 }

@@ -96,7 +96,7 @@ func (h *MessageHandler) ListMessages(c *gin.Context) {
 		nextCursor = *msgs.NextCursor
 	}
 	r.Paginated(c, &items, &r.Pagination{
-		Limit:      limit,
+		Limit:      msgs.Limit,
 		HasMore:    msgs.HasMore,
 		NextCursor: nextCursor,
 	}, "List messages successfully")
@@ -283,5 +283,7 @@ func (h *MessageHandler) msgWithMetaToDTO(mm *model.MessageWithMeta) dto.Message
 	}
 	base.Attachments = atts
 	base.Reactions = reacts
+	base.SenderName = mm.SenderName
+	base.SenderAvatarURL = mm.SenderAvatarURL
 	return base
 }

@@ -26,14 +26,16 @@ import (
 type MessageService struct {
 	roomRepo r.RoomRepository
 	msgRepo  r.MessageRepository
+	userRepo r.UserRepository
 
 	roomViewer RoomViewer
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv RoomViewer) *MessageService {
+func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, ur r.UserRepository, rv RoomViewer) *MessageService {
 	return &MessageService{
 		roomRepo:   rr,
 		msgRepo:    mg,
+		userRepo:   ur,
 		roomViewer: rv,
 	}
 }
@@ -180,9 +182,11 @@ func (s *MessageService) afterSend(ctx context.Context, msg *model.Message) {
 	}
 
 	// Warm cache asynchronously
-	go func() {
-		_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
-	}()
+	if err == nil && !cacheHit && len(members) > 0 {
+		go func() {
+			_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
+		}()
+	}
 
 	// Last msg + act (stream worker) ( chưa triển khai ngay )
 	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
@@ -269,47 +273,100 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 	}
 
 	if len(rows) == 0 {
-		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}}, nil
+		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}, Limit: limit}, nil
 	}
 
-	// Pre-allocate map and slice
+	// Pre-allocate — deduplicate senderIDs ngay tại source
 	msgIDs := make([][]byte, len(rows))
 	msgResult := make([]*model.MessageWithMeta, len(rows))
 	msgMap := make(map[string]*model.MessageWithMeta, len(rows))
 
+	seenSenders := make(map[string]struct{}, len(rows))
+	senderIDs := make([][]byte, 0, len(rows))
+
 	for i, m := range rows {
 		msgIDs[i] = m.ID
+
+		// Deduplicate sender IDs trước khi truyền xuống cache layer
+		if k := string(m.SenderID); len(m.SenderID) > 0 {
+			if _, ok := seenSenders[k]; !ok {
+				seenSenders[k] = struct{}{}
+				senderIDs = append(senderIDs, m.SenderID)
+			}
+		}
+
 		meta := &model.MessageWithMeta{
 			Message:     m,
 			Attachments: []*model.Attachment{},
 			Reactions:   []*model.MessageReaction{},
 		}
 		msgResult[i] = meta
-		msgMap[string(m.ID)] = meta // Dùng string cast thay vì hex encode cho tốc độ
+		msgMap[string(m.ID)] = meta
 	}
 
 	// 2. Parallel fetch using errgroup
-	g, gCtx := errgroup.WithContext(ctx)
+	eg, gCtx := errgroup.WithContext(ctx)
 
 	var atts []*model.Attachment
-	g.Go(func() error {
+	eg.Go(func() error {
 		var err error
 		atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgIDs)
 		return err
 	})
 
 	var reactions []*model.MessageReaction
-	g.Go(func() error {
+	eg.Go(func() error {
 		var err error
 		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs)
 		return err
 	})
 
-	if err := g.Wait(); err != nil {
-		return nil, ae.Internal(err) // Trả lỗi ngay nếu DB gặp vấn đề
+	var users map[string]*model.User
+	eg.Go(func() error {
+		users = make(map[string]*model.User, len(senderIDs))
+		missingIDs := senderIDs
+
+		if g.Session != nil {
+			cachedUsers, misses, err := g.Session.GetUsersWithMisses(gCtx, senderIDs)
+			if err == nil {
+				users = cachedUsers
+				missingIDs = misses
+			} else {
+				g.Logger.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
+			}
+		}
+
+		if len(missingIDs) == 0 {
+			return nil
+		}
+
+		dbUsers, err := s.userRepo.FindByIDs(gCtx, missingIDs)
+		if err != nil {
+			return err
+		}
+		for k, user := range dbUsers {
+			users[k] = user
+		}
+
+		// Warm cache sau khi trả kết quả — dùng timeout để tránh goroutine treo
+		if g.Session != nil && len(dbUsers) > 0 {
+			go func() {
+				warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := g.Session.WarmUsers(warmCtx, dbUsers); err != nil {
+					g.Logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
+				}
+			}()
+		}
+
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, ae.Internal(err)
 	}
 
-	// 3. Mapping data (O(N) thay vì lặp lồng)
+	// 3. Mapping data — O(N)
 	for _, att := range atts {
 		if meta, exists := msgMap[string(att.MessageID)]; exists {
 			meta.Attachments = append(meta.Attachments, att)
@@ -320,21 +377,28 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 			meta.Reactions = append(meta.Reactions, react)
 		}
 	}
+	for _, meta := range msgResult {
+		if user, exists := users[string(meta.SenderID)]; exists {
+			meta.SenderName = user.Username
+			meta.SenderAvatarURL = user.AvatarURL
+		}
+	}
 
-	// 4. Build Next Cursor
-	nextCursor := ""
+	// 4. Build next cursor — nil thay vì pointer tới empty string khi không có trang tiếp
+	var nextCursor *string
 	if hasMore {
 		last := rows[len(rows)-1]
-		nextCursor = encodeMsgCursor(last.CreatedAt, last.Seq)
+		s := encodeMsgCursor(last.CreatedAt, last.Seq)
+		nextCursor = &s
 	}
 
 	return &ResultPage[*model.MessageWithMeta]{
 		Items:      msgResult,
-		NextCursor: &nextCursor,
+		NextCursor: nextCursor,
 		HasMore:    hasMore,
+		Limit:      limit,
 	}, nil
 }
-
 func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error {
 	if err := s.requireMembership(ctx, convID, userID); err != nil {
 		return err
