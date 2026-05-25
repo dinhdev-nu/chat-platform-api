@@ -276,8 +276,9 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}, Limit: limit}, nil
 	}
 
-	// Pre-allocate — deduplicate senderIDs ngay tại source
+	// Pre-allocate
 	msgIDs := make([][]byte, len(rows))
+	msgAttIDs := make([][]byte, 0, len(rows))
 	msgResult := make([]*model.MessageWithMeta, len(rows))
 	msgMap := make(map[string]*model.MessageWithMeta, len(rows))
 
@@ -288,11 +289,21 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		msgIDs[i] = m.ID
 
 		// Deduplicate sender IDs trước khi truyền xuống cache layer
-		if k := string(m.SenderID); len(m.SenderID) > 0 {
-			if _, ok := seenSenders[k]; !ok {
-				seenSenders[k] = struct{}{}
-				senderIDs = append(senderIDs, m.SenderID)
+		if len(m.SenderID) > 0 {
+			if k := string(m.SenderID); k != "" {
+				if _, ok := seenSenders[k]; !ok {
+					seenSenders[k] = struct{}{}
+					senderIDs = append(senderIDs, m.SenderID)
+				}
 			}
+		}
+
+		// Chỉ fetch attachment cho các message type có thể có file
+		switch m.Type {
+		case model.MessageTypeText, model.MessageTypeSystem:
+
+		default:
+			msgAttIDs = append(msgAttIDs, m.ID)
 		}
 
 		meta := &model.MessageWithMeta{
@@ -308,16 +319,18 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 	eg, gCtx := errgroup.WithContext(ctx)
 
 	var atts []*model.Attachment
-	eg.Go(func() error {
-		var err error
-		atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgIDs)
-		return err
-	})
+	if len(msgAttIDs) > 0 {
+		eg.Go(func() error {
+			var err error
+			atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgAttIDs) // chỉ query IDs có attachment
+			return err
+		})
+	}
 
 	var reactions []*model.MessageReaction
 	eg.Go(func() error {
 		var err error
-		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs)
+		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs) // tất cả message đều có thể có reaction
 		return err
 	})
 
@@ -348,7 +361,6 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 			users[k] = user
 		}
 
-		// Warm cache sau khi trả kết quả — dùng timeout để tránh goroutine treo
 		if g.Session != nil && len(dbUsers) > 0 {
 			go func() {
 				warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -384,7 +396,7 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		}
 	}
 
-	// 4. Build next cursor — nil thay vì pointer tới empty string khi không có trang tiếp
+	// 4. Build next cursor
 	var nextCursor *string
 	if hasMore {
 		last := rows[len(rows)-1]
@@ -399,6 +411,7 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		Limit:      limit,
 	}, nil
 }
+
 func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error {
 	if err := s.requireMembership(ctx, convID, userID); err != nil {
 		return err
@@ -474,7 +487,10 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 	}
 
 	go func() {
-		_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
+		// ctx with timeout
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content)
 	}()
 
 	payload := map[string]interface{}{
@@ -524,6 +540,14 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 	if err := s.msgRepo.SoftDeleteMessage(ctx, msgID); err != nil {
 		return ae.Internal(err)
 	}
+
+	go func() {
+		// ctx with timeout
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		msgText := "Message deleted"
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText)
+	}()
 
 	payload := map[string]interface{}{
 		"event":  redis.EventDelMessage,
