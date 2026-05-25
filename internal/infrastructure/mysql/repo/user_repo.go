@@ -19,6 +19,19 @@ func NewUserRepository(db *gorm.DB) r.UserRepository {
 	return &userRepo{db: db}
 }
 
+func (r *userRepo) FindByIDs(ctx context.Context, ids [][]byte) (map[string]*model.User, error) {
+	var rows []gormmodel.User
+	err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("FindByIDs: %w", err)
+	}
+	result := make(map[string]*model.User, len(rows))
+	for _, row := range rows {
+		result[string(row.ID)] = row.ToDomain()
+	}
+	return result, nil
+}
+
 func (r *userRepo) GetIncomingRequests(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error) {
 	if cursor == nil || *cursor == "" {
 		rows, err := ListIncomingFirstPage(ctx, r.db, ListIncomingFirstPageParams{

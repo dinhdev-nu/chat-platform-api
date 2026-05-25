@@ -46,7 +46,7 @@ func extractTokenFromHeader(c *gin.Context) string {
 		return strings.TrimPrefix(token, "Bearer ")
 	}
 
-	return c.Query(TokenQuery)
+	return c.Query(TokenQuery) // Chỉ cho ws
 }
 
 func GetCurrentUser(c *gin.Context) (*model.User, bool) {

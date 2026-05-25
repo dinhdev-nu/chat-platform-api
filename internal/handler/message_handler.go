@@ -45,7 +45,7 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 			return
 		}
 
-		msg, err := h.ms.SendMessage(c, convID, user.ID, req.Type, req.Content, req.ParentID)
+		msg, err := h.ms.SendMessage(c.Request.Context(), convID, user.ID, req.Type, req.Content, []byte(req.ParentID))
 		if err != nil {
 			_ = c.Error(err)
 			return
@@ -54,7 +54,7 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 		r.OK(c, &out, "Send msg successfully")
 		return
 	}
-	msgWithMeta, err := h.ms.SendMessageWithAttachment(c, convID, user.ID, req.Type, req.Content, req.ParentID, h.toAttachmentDomain(req.Attachments))
+	msgWithMeta, err := h.ms.SendMessageWithAttachment(c.Request.Context(), convID, user.ID, req.Type, req.Content, []byte(req.ParentID), h.toAttachmentDomain(req.Attachments))
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -76,8 +76,12 @@ func (h *MessageHandler) ListMessages(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	limitStr := c.DefaultQuery("limit", "20")
-	limit, _ := strconv.Atoi(limitStr)
-	msgs, err := h.ms.ListMessages(c, user.ID, convID, &cursor, limit)
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		_ = c.Error(ae.ValidationError("Invalid limit parameter"))
+		return
+	}
+	msgs, err := h.ms.ListMessages(c.Request.Context(), user.ID, convID, &cursor, limit)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -92,7 +96,7 @@ func (h *MessageHandler) ListMessages(c *gin.Context) {
 		nextCursor = *msgs.NextCursor
 	}
 	r.Paginated(c, &items, &r.Pagination{
-		Limit:      limit,
+		Limit:      msgs.Limit,
 		HasMore:    msgs.HasMore,
 		NextCursor: nextCursor,
 	}, "List messages successfully")
@@ -114,7 +118,7 @@ func (h *MessageHandler) MarkAsRead(c *gin.Context) {
 		_ = c.Error(ae.ValidationError(err.Error()))
 		return
 	}
-	if err := h.ms.MarkAsRead(c, convID, user.ID, req.LastReadMsgID); err != nil {
+	if err := h.ms.MarkAsRead(c.Request.Context(), convID, user.ID, []byte(req.LastReadMsgID)); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -137,7 +141,7 @@ func (h *MessageHandler) EditMessage(c *gin.Context) {
 		_ = c.Error(ae.ValidationError(err.Error()))
 		return
 	}
-	msg, err := h.ms.EditMessage(c, user.ID, msgID, req.Content)
+	msg, err := h.ms.EditMessage(c.Request.Context(), user.ID, msgID, req.Content)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -157,7 +161,7 @@ func (h *MessageHandler) DeleteMessage(c *gin.Context) {
 		_ = c.Error(ae.BadRequest("Invalid message ID"))
 		return
 	}
-	if err := h.ms.DeleteMessage(c, user.ID, msgID); err != nil {
+	if err := h.ms.DeleteMessage(c.Request.Context(), user.ID, msgID); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -175,12 +179,12 @@ func (h *MessageHandler) ToggleReaction(c *gin.Context) {
 		_ = c.Error(ae.BadRequest("Invalid message ID"))
 		return
 	}
-	var req dto.TogglePinRequest
+	var req dto.ToggleReactionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		_ = c.Error(ae.ValidationError(err.Error()))
 		return
 	}
-	action, err := h.ms.ToggleReaction(c, user.ID, msgID, req.Emoji)
+	action, err := h.ms.ToggleReaction(c.Request.Context(), user.ID, msgID, req.Emoji)
 	if err != nil {
 		_ = c.Error(err)
 		return
@@ -279,5 +283,7 @@ func (h *MessageHandler) msgWithMetaToDTO(mm *model.MessageWithMeta) dto.Message
 	}
 	base.Attachments = atts
 	base.Reactions = reacts
+	base.SenderName = mm.SenderName
+	base.SenderAvatarURL = mm.SenderAvatarURL
 	return base
 }

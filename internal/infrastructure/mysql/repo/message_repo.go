@@ -68,7 +68,7 @@ func (r *messageRepo) GetMessageByID(ctx context.Context, id []byte) (*model.Mes
 	row, err := r.q.GetMessageByID(ctx, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, sql.ErrNoRows
+			return nil, nil
 		}
 		return nil, fmt.Errorf("messageRepo.GetMessageByID: %w", err)
 	}

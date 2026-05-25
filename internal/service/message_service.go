@@ -3,15 +3,14 @@ package service
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
@@ -27,14 +26,16 @@ import (
 type MessageService struct {
 	roomRepo r.RoomRepository
 	msgRepo  r.MessageRepository
+	userRepo r.UserRepository
 
 	roomViewer RoomViewer
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv RoomViewer) *MessageService {
+func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, ur r.UserRepository, rv RoomViewer) *MessageService {
 	return &MessageService{
 		roomRepo:   rr,
 		msgRepo:    mg,
+		userRepo:   ur,
 		roomViewer: rv,
 	}
 }
@@ -43,11 +44,10 @@ func (s *MessageService) SendMessage(
 	ctx context.Context, convID, senderUID []byte,
 	msgType int8, content string, parentID []byte,
 ) (*model.Message, error) {
-	// Verify membership, permissions, etc. (omitted for brevity)
 	if err := s.requireMembership(ctx, convID, senderUID); err != nil {
 		return nil, err
 	}
-	//seq
+
 	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
@@ -70,8 +70,10 @@ func (s *MessageService) SendMessage(
 	if err := s.msgRepo.InsertMessage(ctx, arg); err != nil {
 		return nil, ae.Internal(err)
 	}
+	now := time.Now()
+	arg.CreatedAt = now
+	arg.UpdatedAt = now
 
-	// async tasks: fan-out, unread, last_act (stream worker), notijob (pubsub)
 	go s.afterSend(context.Background(), arg)
 
 	return arg, nil
@@ -86,12 +88,12 @@ func (s *MessageService) SendMessageWithAttachment(
 		return nil, err
 	}
 
-	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
+	mID, err := crypto.NewUUIDv7Bytes()
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
 
-	mID, err := crypto.NewUUIDv7Bytes()
+	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
@@ -109,11 +111,16 @@ func (s *MessageService) SendMessageWithAttachment(
 		return nil, ae.Internal(err)
 	}
 
-	for _, att := range attachments {
-		att.MessageID = mID
-	}
 	if err := s.msgRepo.BatchInsertAttachments(ctx, attachments); err != nil {
+		_ = s.msgRepo.SoftDeleteMessage(context.Background(), mID)
 		return nil, ae.Internal(err)
+	}
+
+	now := time.Now()
+	arg.CreatedAt = now
+	arg.UpdatedAt = now
+	for _, att := range attachments {
+		att.CreatedAt = now
 	}
 
 	go s.afterSend(context.Background(), arg)
@@ -121,6 +128,7 @@ func (s *MessageService) SendMessageWithAttachment(
 	return &model.MessageWithMeta{
 		Message:     arg,
 		Attachments: attachments,
+		Reactions:   []*model.MessageReaction{},
 	}, nil
 }
 
@@ -174,9 +182,11 @@ func (s *MessageService) afterSend(ctx context.Context, msg *model.Message) {
 	}
 
 	// Warm cache asynchronously
-	go func() {
-		_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
-	}()
+	if err == nil && !cacheHit && len(members) > 0 {
+		go func() {
+			_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
+		}()
+	}
 
 	// Last msg + act (stream worker) ( chưa triển khai ngay )
 	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
@@ -219,6 +229,17 @@ func (s *MessageService) requireMembership(ctx context.Context, convID, senderUI
 	return nil
 }
 
+func (s *MessageService) getMemberRoleRequired(ctx context.Context, convID, userID []byte) (model.MemberRole, error) {
+	role, err := s.roomRepo.GetMemberRole(ctx, convID, userID)
+	if err != nil {
+		return 0, ae.Internal(err)
+	}
+	if role == 0 {
+		return 0, ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+	}
+	return role, nil
+}
+
 func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, cursor *string, limit int) (*ResultPage[*model.MessageWithMeta], error) {
 	if err := s.requireMembership(ctx, convID, uid); err != nil {
 		return nil, err
@@ -252,47 +273,112 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 	}
 
 	if len(rows) == 0 {
-		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}}, nil
+		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}, Limit: limit}, nil
 	}
 
-	// Pre-allocate map and slice
+	// Pre-allocate
 	msgIDs := make([][]byte, len(rows))
+	msgAttIDs := make([][]byte, 0, len(rows))
 	msgResult := make([]*model.MessageWithMeta, len(rows))
 	msgMap := make(map[string]*model.MessageWithMeta, len(rows))
 
+	seenSenders := make(map[string]struct{}, len(rows))
+	senderIDs := make([][]byte, 0, len(rows))
+
 	for i, m := range rows {
 		msgIDs[i] = m.ID
+
+		// Deduplicate sender IDs trước khi truyền xuống cache layer
+		if len(m.SenderID) > 0 {
+			if k := string(m.SenderID); k != "" {
+				if _, ok := seenSenders[k]; !ok {
+					seenSenders[k] = struct{}{}
+					senderIDs = append(senderIDs, m.SenderID)
+				}
+			}
+		}
+
+		// Chỉ fetch attachment cho các message type có thể có file
+		switch m.Type {
+		case model.MessageTypeText, model.MessageTypeSystem:
+
+		default:
+			msgAttIDs = append(msgAttIDs, m.ID)
+		}
+
 		meta := &model.MessageWithMeta{
 			Message:     m,
 			Attachments: []*model.Attachment{},
 			Reactions:   []*model.MessageReaction{},
 		}
 		msgResult[i] = meta
-		msgMap[string(m.ID)] = meta // Dùng string cast thay vì hex encode cho tốc độ
+		msgMap[string(m.ID)] = meta
 	}
 
 	// 2. Parallel fetch using errgroup
-	g, gCtx := errgroup.WithContext(ctx)
+	eg, gCtx := errgroup.WithContext(ctx)
 
 	var atts []*model.Attachment
-	g.Go(func() error {
-		var err error
-		atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgIDs)
-		return err
-	})
-
-	var reactions []*model.MessageReaction
-	g.Go(func() error {
-		var err error
-		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs)
-		return err
-	})
-
-	if err := g.Wait(); err != nil {
-		return nil, ae.Internal(err) // Trả lỗi ngay nếu DB gặp vấn đề
+	if len(msgAttIDs) > 0 {
+		eg.Go(func() error {
+			var err error
+			atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgAttIDs) // chỉ query IDs có attachment
+			return err
+		})
 	}
 
-	// 3. Mapping data (O(N) thay vì lặp lồng)
+	var reactions []*model.MessageReaction
+	eg.Go(func() error {
+		var err error
+		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs) // tất cả message đều có thể có reaction
+		return err
+	})
+
+	var users map[string]*model.User
+	eg.Go(func() error {
+		users = make(map[string]*model.User, len(senderIDs))
+		missingIDs := senderIDs
+
+		if g.Session != nil {
+			cachedUsers, misses, err := g.Session.GetUsersWithMisses(gCtx, senderIDs)
+			if err == nil {
+				users = cachedUsers
+				missingIDs = misses
+			} else {
+				g.Logger.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
+			}
+		}
+
+		if len(missingIDs) == 0 {
+			return nil
+		}
+
+		dbUsers, err := s.userRepo.FindByIDs(gCtx, missingIDs)
+		if err != nil {
+			return err
+		}
+		for k, user := range dbUsers {
+			users[k] = user
+		}
+
+		if g.Session != nil && len(dbUsers) > 0 {
+			go func() {
+				warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := g.Session.WarmUsers(warmCtx, dbUsers); err != nil {
+					g.Logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
+				}
+			}()
+		}
+
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, ae.Internal(err)
+	}
+
+	// 3. Mapping data — O(N)
 	for _, att := range atts {
 		if meta, exists := msgMap[string(att.MessageID)]; exists {
 			meta.Attachments = append(meta.Attachments, att)
@@ -303,18 +389,26 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 			meta.Reactions = append(meta.Reactions, react)
 		}
 	}
+	for _, meta := range msgResult {
+		if user, exists := users[string(meta.SenderID)]; exists {
+			meta.SenderName = user.Username
+			meta.SenderAvatarURL = user.AvatarURL
+		}
+	}
 
-	// 4. Build Next Cursor
-	nextCursor := ""
+	// 4. Build next cursor
+	var nextCursor *string
 	if hasMore {
 		last := rows[len(rows)-1]
-		nextCursor = encodeMsgCursor(last.CreatedAt, last.Seq)
+		s := encodeMsgCursor(last.CreatedAt, last.Seq)
+		nextCursor = &s
 	}
 
 	return &ResultPage[*model.MessageWithMeta]{
 		Items:      msgResult,
-		NextCursor: &nextCursor,
+		NextCursor: nextCursor,
 		HasMore:    hasMore,
+		Limit:      limit,
 	}, nil
 }
 
@@ -325,16 +419,20 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 
 	cursorTS, err := s.msgRepo.GetMessageCursorTS(ctx, lastReadMsgID, convID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ae.New(ae.ErrInvalidCursor, "Invalid cursor")
-		}
 		return ae.Internal(err)
 	}
-
-	_ = cache.ResetUnread(ctx, userID, convID)
+	if cursorTS == nil {
+		return ae.New(ae.ErrInvalidCursor, "Invalid cursor")
+	}
 
 	if err := s.roomRepo.UpdateLastReadAt(ctx, convID, userID, cursorTS); err != nil {
 		return ae.Internal(err)
+	}
+	unread, err := s.msgRepo.GetUnreadCountByWatermark(ctx, userID, convID)
+	if err != nil {
+		_ = cache.DeleteUnread(ctx, userID, convID)
+	} else {
+		_ = cache.SetUnread(ctx, userID, convID, unread)
 	}
 
 	payload := map[string]interface{}{
@@ -356,9 +454,17 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 }
 
 func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, newContent string) (*model.Message, error) {
+	newContent = strings.TrimSpace(newContent)
+	if newContent == "" {
+		return nil, ae.ValidationError("Message content cannot be empty")
+	}
+
 	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
 	if err != nil {
 		return nil, ae.Internal(err)
+	}
+	if msg == nil {
+		return nil, ae.New(ae.ErrMessageNotFound, "Message not found")
 	}
 	if msg.IsDeleted {
 		return nil, ae.New(ae.ErrMessageDeleted, "Message has been deleted")
@@ -370,20 +476,28 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.New(ae.ErrCannotEditMessage, "Only text messages can be edited")
 	}
 	msg.Content = &newContent
-	effected, er := s.msgRepo.UpdateMessageContent(ctx, msg)
-	if er != nil {
-		return nil, ae.Internal(er)
+	msg.UpdatedAt = time.Now()
+	msg.IsEdited = true
+	affected, err := s.msgRepo.UpdateMessageContent(ctx, msg)
+	if err != nil {
+		return nil, ae.Internal(err)
 	}
-	if effected == 0 {
+	if affected == 0 {
 		return nil, ae.New(ae.ErrCannotEditMessage, "Edit window expired (24h) or message not found")
 	}
-	msg.IsEdited = true
+
+	go func() {
+		// ctx with timeout
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content)
+	}()
 
 	payload := map[string]interface{}{
 		"event":     redis.EventEditMessage,
 		"msg_id":    hex.EncodeToString(msgID),
 		"content":   newContent,
-		"edited_at": time.Now().Format(time.RFC3339Nano),
+		"edited_at": msg.UpdatedAt.Format(time.RFC3339Nano),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -404,6 +518,14 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 	if err != nil {
 		return ae.Internal(err)
 	}
+	if msg == nil {
+		return ae.New(ae.ErrMessageNotFound, "Message not found")
+	}
+
+	role, err := s.getMemberRoleRequired(ctx, msg.ConversationID, userID)
+	if err != nil {
+		return err
+	}
 	if msg.IsDeleted {
 		return ae.New(ae.ErrMessageDeleted, "Message has already been deleted")
 	}
@@ -411,32 +533,57 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 		return ae.New(ae.ErrCannotDeleteMessage, "System messages cannot be deleted")
 	}
 	isSender := bytes.Equal(msg.SenderID, userID)
-	if !isSender {
-		role, err := s.roomRepo.GetMemberRole(ctx, msg.ConversationID, userID)
-		if err != nil {
-			return ae.Internal(err)
-		}
-		if role != model.RoleAdmin {
-			return ae.Forbidden("User does not have permission to delete this message")
-		}
+	if !isSender && role != model.RoleAdmin && role != model.RoleOwner {
+		return ae.Forbidden("User does not have permission to delete this message")
 	}
 
 	if err := s.msgRepo.SoftDeleteMessage(ctx, msgID); err != nil {
 		return ae.Internal(err)
 	}
 
+	go func() {
+		// ctx with timeout
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		msgText := "Message deleted"
+		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText)
+	}()
+
+	payload := map[string]interface{}{
+		"event":  redis.EventDelMessage,
+		"msg_id": hex.EncodeToString(msgID),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		g.Logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload: %v", zap.Error(err))
+		return nil
+	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventDelMessage,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
-		Payload: json.RawMessage(fmt.Sprintf(`{"event":"%s","msg_id":"%s"}`, redis.EventDelMessage, hex.EncodeToString(msgID))),
+		Payload: raw,
 	})
 
 	return nil
 }
 
 func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byte, emoji string) (string, error) {
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
+		return "", ae.ValidationError("Emoji is required")
+	}
+	if utf8.RuneCountInString(emoji) > 10 {
+		return "", ae.ValidationError("Emoji is too long")
+	}
+
 	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
 	if err != nil {
+		return "", ae.Internal(err)
+	}
+	if msg == nil {
+		return "", ae.New(ae.ErrMessageNotFound, "Message not found")
+	}
+	if err := s.requireMembership(ctx, msg.ConversationID, userID); err != nil {
 		return "", ae.Internal(err)
 	}
 	if msg.IsDeleted {
@@ -456,10 +603,22 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 		action = "removed"
 	}
 
+	payload := map[string]interface{}{
+		"event":   redis.EventToggleReaction,
+		"msg_id":  hex.EncodeToString(msgID),
+		"user_id": hex.EncodeToString(userID),
+		"emoji":   emoji,
+		"action":  action,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		g.Logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload: %v", zap.Error(err))
+		return action, nil
+	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventToggleReaction,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
-		Payload: json.RawMessage(fmt.Sprintf(`{"event":"%s","msg_id":"%s","user_id":"%s","emoji":"%s","action":"%s"}`, redis.EventToggleReaction, hex.EncodeToString(msgID), hex.EncodeToString(userID), emoji, action)),
+		Payload: raw,
 	})
 
 	return action, nil

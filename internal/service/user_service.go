@@ -63,6 +63,9 @@ func (s *UserService) Search(ctx context.Context, uid []byte, q string, cursor *
 		username := last.Username
 		nextCursor = username
 	}
+	if row == nil {
+		row = []*model.SearchUser{}
+	}
 
 	return &ResultPage[*model.SearchUser]{
 		Items:      row,
@@ -164,6 +167,9 @@ func (s *UserService) GetContacts(ctx context.Context, userID []byte, cursor *st
 		username := last.Username
 		nextCursor = username
 	}
+	if rows == nil {
+		rows = []*model.SearchUser{}
+	}
 
 	return &ResultPage[*model.SearchUser]{
 		Items:      rows,
@@ -194,6 +200,9 @@ func (s *UserService) GetIncomingContactRequests(ctx context.Context, userID []b
 		last := rows[len(rows)-1]
 		username := last.Username
 		nextCursor = username
+	}
+	if rows == nil {
+		rows = []*model.SearchUser{}
 	}
 
 	return &ResultPage[*model.SearchUser]{

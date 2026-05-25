@@ -24,6 +24,6 @@ func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageReposi
 	return s.NewRoomService(ur, rr, mr)
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, rv s.RoomViewer) *s.MessageService {
-	return s.NewMessageService(rr, mg, rv)
+func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, ur r.UserRepository, rv s.RoomViewer) *s.MessageService {
+	return s.NewMessageService(rr, mg, ur, rv)
 }

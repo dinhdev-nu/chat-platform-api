@@ -15,9 +15,9 @@ func NewRoomManager() *RoomManager {
 	return &RoomManager{viewing: make(map[string]map[string]int)}
 }
 
-func (rm *RoomManager) IsViewing(convID, userID []byte) bool {
-	cidHex := hex.EncodeToString(convID)
+func (rm *RoomManager) IsViewing(userID, convID []byte) bool {
 	uidHex := hex.EncodeToString(userID)
+	cidHex := hex.EncodeToString(convID)
 
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()

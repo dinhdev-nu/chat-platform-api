@@ -31,6 +31,7 @@ type ResultPage[T any] struct {
 	Items      []T     `json:"items"`
 	NextCursor *string `json:"nextCursor"`
 	HasMore    bool    `json:"hasMore"`
+	Limit      int     `json:"limit"`
 }
 
 func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageRepository) *RoomService {
@@ -501,7 +502,7 @@ func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convI
 				if err != nil {
 					return 0, err
 				}
-				if ex > 1 {
+				if ex > 0 {
 					break
 				}
 			}

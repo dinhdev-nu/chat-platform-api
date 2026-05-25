@@ -69,6 +69,8 @@ type MessageStatus struct {
 
 type MessageWithMeta struct {
 	*Message
-	Attachments []*Attachment
-	Reactions   []*MessageReaction
+	SenderName      string
+	SenderAvatarURL *string
+	Attachments     []*Attachment
+	Reactions       []*MessageReaction
 }

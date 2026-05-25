@@ -1,17 +1,19 @@
 package dto
 
+import "github.com/dinhdev-nu/chat-platform-api/pkg/types"
+
 type SendMessageRequest struct {
 	Content     string              `json:"content" binding:"omitempty,max=65536"`
 	Type        int8                `json:"type" binding:"required,min=1,max=5"`
-	ParentID    []byte              `json:"parent_id,omitempty" binding:"omitempty,len=32"`
-	Attachments []AttachmentRequest `json:"attachments,omitempty" binding:"dive"`
+	ParentID    types.HexID         `json:"parent_id,omitempty" binding:"omitempty"`
+	Attachments []AttachmentRequest `json:"attachments,omitempty" binding:"omitempty,max=10,dive"`
 }
 type EditMessageRequest struct {
-	Content string `json:"content" binding:"omitempty,max=65536"`
+	Content string `json:"content" binding:"required,min=1,max=65536"`
 }
 
-type TogglePinRequest struct {
-	Emoji string `json:"content" binding:"required,min=1,max=65536"`
+type ToggleReactionRequest struct {
+	Emoji string `json:"emoji" binding:"required,min=1,max=10"`
 }
 
 type AttachmentRequest struct {
@@ -25,7 +27,7 @@ type AttachmentRequest struct {
 }
 
 type MarkAsReadRequest struct {
-	LastReadMsgID []byte `json:"last_read_msg_id" binding:"required,len=32"`
+	LastReadMsgID types.HexID `json:"last_read_msg_id" binding:"required"`
 }
 
 // Response DTOs
@@ -51,20 +53,24 @@ type MessageReactionResponse struct {
 }
 
 type MessageResponse struct {
-	ID               string                    `json:"id"`
-	ConversationID   string                    `json:"conversation_id"`
-	SenderID         string                    `json:"sender_id"`
-	ParentID         *string                   `json:"parent_id,omitempty"`
-	Type             int8                      `json:"type"`
-	Content          *string                   `json:"content,omitempty"`
-	ContentEncrypted bool                      `json:"content_encrypted"`
-	Iv               *string                   `json:"iv,omitempty"`
-	Seq              uint64                    `json:"seq"`
-	IsEdited         bool                      `json:"is_edited"`
-	IsDeleted        bool                      `json:"is_deleted"`
-	DeletedAt        *string                   `json:"deleted_at,omitempty"`
-	CreatedAt        string                    `json:"created_at"`
-	UpdatedAt        string                    `json:"updated_at"`
-	Attachments      []AttachmentResponse      `json:"attachments,omitempty"`
-	Reactions        []MessageReactionResponse `json:"reactions,omitempty"`
+	ID               string  `json:"id"`
+	ConversationID   string  `json:"conversation_id"`
+	SenderID         string  `json:"sender_id"`
+	ParentID         *string `json:"parent_id,omitempty"`
+	Type             int8    `json:"type"`
+	Content          *string `json:"content,omitempty"`
+	ContentEncrypted bool    `json:"content_encrypted"`
+	Iv               *string `json:"iv,omitempty"`
+	Seq              uint64  `json:"seq"`
+	IsEdited         bool    `json:"is_edited"`
+	IsDeleted        bool    `json:"is_deleted"`
+	DeletedAt        *string `json:"deleted_at,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+
+	SenderName      string  `json:"sender_name"`
+	SenderAvatarURL *string `json:"sender_avatar_url,omitempty"`
+
+	Attachments []AttachmentResponse      `json:"attachments,omitempty"`
+	Reactions   []MessageReactionResponse `json:"reactions,omitempty"`
 }

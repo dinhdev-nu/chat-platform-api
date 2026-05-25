@@ -40,7 +40,7 @@ func NewContainer() *Container {
 	authService := provider.NewAuthService(userRepo, userTokenRepo, jwt, mailQueue)
 	userService := provider.NewUserService(userRepo)
 	roomService := provider.NewRoomService(userRepo, roomRepo, messageRepo)
-	messageService := provider.NewMessageService(roomRepo, messageRepo, roomViewer)
+	messageService := provider.NewMessageService(roomRepo, messageRepo, userRepo, roomViewer)
 
 	// handlers
 	authHandler := provider.NewAuthHandler(authService)

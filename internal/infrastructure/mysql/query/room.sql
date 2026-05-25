@@ -26,27 +26,44 @@ VALUES (?, ?, ?, ?, ?, ?, NOW(3));
 INSERT IGNORE INTO conversation_members (conversation_id, user_id, role)
 VALUES (?, ?, ?);
 
-
 -- name: ListConversationsFirstPage :many
 SELECT
-  c.id, c.type, c.name, c.avatar_url,
-  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
-  cm.role, cm.is_muted
-FROM conversations c
-INNER JOIN conversation_members cm
-    ON cm.conversation_id = c.id AND cm.user_id = ?
+    c.id, c.type,
+    CASE WHEN c.type = 1 THEN COALESCE(p.username, 'Người dùng đã xóa tài khoản')
+                         ELSE c.name       END AS name,
+    CASE WHEN c.type = 1 THEN COALESCE(p.avatar_url, '')
+                         ELSE c.avatar_url END AS avatar_url,
+    c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+    cm.role, cm.is_muted
+FROM conversation_members cm
+INNER JOIN conversations c
+    ON c.id = cm.conversation_id
+LEFT JOIN conversation_members cm_p
+    ON c.type = 1 AND cm_p.conversation_id = c.id AND cm_p.user_id != cm.user_id
+LEFT JOIN users p
+    ON c.type = 1 AND p.id = cm_p.user_id
+WHERE cm.user_id = ?
 ORDER BY c.last_activity_at DESC, c.id DESC
 LIMIT ?;
 
 -- name: ListConversationsNextPage :many
 SELECT
-  c.id, c.type, c.name, c.avatar_url,
-  c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
-  cm.role, cm.is_muted
-FROM conversations c
-INNER JOIN conversation_members cm
-    ON cm.conversation_id = c.id AND cm.user_id = ? 
-WHERE (c.last_activity_at < ? OR (c.last_activity_at = ? AND c.id < ?))
+    c.id, c.type,
+    CASE WHEN c.type = 1 THEN COALESCE(p.username, 'Người dùng đã xóa tài khoản')
+                         ELSE c.name       END AS name,
+    CASE WHEN c.type = 1 THEN COALESCE(p.avatar_url, '')
+                         ELSE c.avatar_url END AS avatar_url,
+    c.last_message_id, c.last_message_text, c.last_activity_at, c.created_at, c.updated_at,
+    cm.role, cm.is_muted
+FROM conversation_members cm
+INNER JOIN conversations c
+    ON c.id = cm.conversation_id
+LEFT JOIN conversation_members cm_p
+    ON c.type = 1 AND cm_p.conversation_id = c.id AND cm_p.user_id != cm.user_id
+LEFT JOIN users p
+    ON c.type = 1 AND p.id = cm_p.user_id
+WHERE cm.user_id = ?
+  AND (c.last_activity_at < ? OR (c.last_activity_at = ? AND c.id < ?))
 ORDER BY c.last_activity_at DESC, c.id DESC
 LIMIT ?;
 
