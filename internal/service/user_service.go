@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
@@ -12,6 +13,17 @@ import (
 
 type UserService struct {
 	userRepo r.UserRepository
+}
+
+const (
+	sysContactsSet = "contacts.set"
+	sysContactsAdd = "contacts.add"
+)
+
+type contactSysEvent struct {
+	Type    string   `json:"type"`
+	UserID  string   `json:"user_id,omitempty"`
+	UserIDs []string `json:"user_ids,omitempty"`
 }
 
 func NewUserService(ur r.UserRepository) *UserService {
@@ -108,6 +120,7 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 			if err != nil {
 				return model.ContactRequestResult(""), ae.Internal(err)
 			}
+			s.publishContactAccepted(ctx, senderUID, targetUID)
 			return model.ContactRequestResultAccepted, nil
 		}
 	}
@@ -141,6 +154,7 @@ func (s *UserService) AcceptContactRequest(ctx context.Context, currentUID, send
 	if effected == 0 {
 		return ae.New(ae.ErrInvalidInput, "contact request is not found")
 	}
+	s.publishContactAccepted(ctx, currentUID, senderUID)
 	return nil
 }
 
@@ -170,6 +184,8 @@ func (s *UserService) GetContacts(ctx context.Context, userID []byte, cursor *st
 	if rows == nil {
 		rows = []*model.SearchUser{}
 	}
+	s.attachOnlineStatus(ctx, rows)
+	s.publishContactSet(ctx, userID, rows)
 
 	return &ResultPage[*model.SearchUser]{
 		Items:      rows,
@@ -210,4 +226,65 @@ func (s *UserService) GetIncomingContactRequests(ctx context.Context, userID []b
 		HasMore:    hasMore,
 		NextCursor: &nextCursor,
 	}, nil
+}
+
+func (s *UserService) attachOnlineStatus(ctx context.Context, rows []*model.SearchUser) {
+	ids := make([][]byte, 0, len(rows))
+	for _, row := range rows {
+		id, err := hex.DecodeString(row.ID)
+		if err == nil && len(id) == 16 {
+			ids = append(ids, id)
+		}
+	}
+
+	onlineByID := map[string]bool{}
+	if g.Presence != nil && len(ids) > 0 {
+		if result, err := g.Presence.BulkIsOnline(ctx, ids); err == nil {
+			onlineByID = result
+		}
+	}
+
+	for _, row := range rows {
+		isOnline := onlineByID[row.ID]
+		row.IsOnline = &isOnline
+	}
+}
+
+func (s *UserService) publishContactSet(ctx context.Context, userID []byte, rows []*model.SearchUser) {
+	userIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.ID != "" {
+			userIDs = append(userIDs, row.ID)
+		}
+	}
+	s.publishContactSysEvent(ctx, userID, contactSysEvent{
+		Type:    sysContactsSet,
+		UserIDs: userIDs,
+	})
+}
+
+func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []byte) {
+	uid1Hex := hex.EncodeToString(uid1)
+	uid2Hex := hex.EncodeToString(uid2)
+	s.publishContactSysEvent(ctx, uid1, contactSysEvent{
+		Type:   sysContactsAdd,
+		UserID: uid2Hex,
+	})
+	s.publishContactSysEvent(ctx, uid2, contactSysEvent{
+		Type:   sysContactsAdd,
+		UserID: uid1Hex,
+	})
+}
+
+func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte, evt contactSysEvent) {
+	if g.RedisClient == nil {
+		return
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return
+	}
+	go func() {
+		_ = g.RedisClient.Publish(context.Background(), "sys:"+hex.EncodeToString(userID), payload).Err()
+	}()
 }

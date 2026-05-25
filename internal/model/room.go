@@ -41,9 +41,11 @@ type ConversationMember struct {
 
 type ConversationListRow struct {
 	Conversation
-	Role        MemberRole
-	IsMuted     bool
-	UnreadCount int64
+	Role              MemberRole
+	IsMuted           bool
+	UnreadCount       int64
+	MemberOnlineCount int
+	IsOnline          bool
 }
 
 func (c Conversation) IsDirect() bool      { return c.Type == ConvTypeDirect }

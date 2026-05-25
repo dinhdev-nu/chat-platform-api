@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -43,6 +42,9 @@ type Client struct {
 
 	convMu sync.RWMutex
 	convs  map[string]struct{} // hex conv_id
+
+	contMu sync.RWMutex        // presences của contact
+	conts  map[string]struct{} // hex uid
 }
 
 func NewClient(
@@ -69,6 +71,7 @@ func NewClient(
 		rdb:    rdb,
 		log:    log,
 		convs:  convSet,
+		conts:  make(map[string]struct{}),
 	}
 }
 
@@ -93,6 +96,55 @@ func (c *Client) hasConv(cidHex string) bool {
 	_, ok := c.convs[cidHex]
 	c.convMu.RUnlock()
 	return ok
+}
+
+func (c *Client) snapshotConvs() []string {
+	c.convMu.RLock()
+	defer c.convMu.RUnlock()
+
+	convIDs := make([]string, 0, len(c.convs))
+	for cidHex := range c.convs {
+		convIDs = append(convIDs, cidHex)
+	}
+	return convIDs
+}
+
+func (c *Client) setContacts(uidHexes []string) {
+	conts := make(map[string]struct{}, len(uidHexes))
+	for _, uidHex := range uidHexes {
+		if isValidHexUID(uidHex) && uidHex != c.uidHex {
+			conts[uidHex] = struct{}{}
+		}
+	}
+
+	c.contMu.Lock()
+	c.conts = conts
+	c.contMu.Unlock()
+}
+
+func (c *Client) addContact(uidHex string) {
+	if !isValidHexUID(uidHex) || uidHex == c.uidHex {
+		return
+	}
+
+	c.contMu.Lock()
+	if c.conts == nil {
+		c.conts = make(map[string]struct{})
+	}
+	c.conts[uidHex] = struct{}{}
+	c.contMu.Unlock()
+}
+
+func (c *Client) hasContact(uidHex string) bool {
+	c.contMu.RLock()
+	_, ok := c.conts[uidHex]
+	c.contMu.RUnlock()
+	return ok
+}
+
+func isValidHexUID(uidHex string) bool {
+	uid, err := hex.DecodeString(uidHex)
+	return err == nil && len(uid) == 16
 }
 
 // readPump đọc message từ WS connection và xử lý chúng
@@ -196,8 +248,6 @@ func (c *Client) onTyping(payload json.RawMessage) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return
 	}
-
-	fmt.Printf("User %s is typing in conversation %s\n", c.uidHex, p.ConvID)
 
 	if !c.hasConv(p.ConvID) {
 		c.log.Warn("ws typing for non-viewing conv",

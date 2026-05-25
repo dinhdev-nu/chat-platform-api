@@ -296,6 +296,7 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 		}
 		convs[i] = c
 	}
+	s.attachConversationPresence(ctx, uid, convs)
 
 	nextCursor := ""
 	if hasMore {
@@ -313,6 +314,65 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 		NextCursor: &nextCursor,
 		HasMore:    hasMore,
 	}, nil
+}
+
+func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID []byte, convs []*model.ConversationListRow) {
+	if len(convs) == 0 {
+		return
+	}
+
+	membersByConv := make(map[string][][]byte, len(convs))
+	uniqueMembers := make([][]byte, 0)
+	seen := make(map[string]struct{})
+
+	for _, conv := range convs {
+		members, err := cache.GetMembers(ctx, conv.ID)
+		if err != nil || len(members) == 0 {
+			members, err = s.roomRepo.GetConversationMemberIDs(ctx, conv.ID)
+			if err != nil {
+				continue
+			}
+			if len(members) > 0 {
+				go func(convID []byte, memberIDs [][]byte) {
+					_ = cache.WarmMember(context.Background(), convID, memberIDs)
+				}(conv.ID, members)
+			}
+		}
+
+		cidHex := hex.EncodeToString(conv.ID)
+		for _, memberID := range members {
+			if bytes.Equal(memberID, currentUID) {
+				continue
+			}
+
+			membersByConv[cidHex] = append(membersByConv[cidHex], memberID)
+			memberKey := string(memberID)
+			if _, ok := seen[memberKey]; ok {
+				continue
+			}
+			seen[memberKey] = struct{}{}
+			uniqueMembers = append(uniqueMembers, memberID)
+		}
+	}
+
+	onlineByID := make(map[string]bool, len(uniqueMembers))
+	if g.Presence != nil && len(uniqueMembers) > 0 {
+		if result, err := g.Presence.BulkIsOnline(ctx, uniqueMembers); err == nil {
+			onlineByID = result
+		}
+	}
+
+	for _, conv := range convs {
+		cidHex := hex.EncodeToString(conv.ID)
+		onlineCount := 0
+		for _, memberID := range membersByConv[cidHex] {
+			if onlineByID[hex.EncodeToString(memberID)] {
+				onlineCount++
+			}
+		}
+		conv.MemberOnlineCount = onlineCount
+		conv.IsOnline = onlineCount > 0
+	}
 }
 
 func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUID []byte, actorName string) error {
@@ -379,12 +439,12 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		_ = s.roomRepo.UpdateConversationLastActivity(bg, convUID, arg.ID, arg.Content)
 	}()
 	// Push notification
-	// convHex := hex.EncodeToString(convUID)
-	// _ = g.PubSub.Publish(ctx, convUID, redis.Event{
-	// 	Type:    redis.EventMemberAdded,
-	// 	ConvID:  convHex,
-	// 	Payload: json.RawMessage(`{"event":"member.added","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
-	// })
+	convHex := hex.EncodeToString(convUID)
+	_ = g.PubSub.Publish(ctx, convUID, redis.Event{
+		Type:    redis.EventMemberAdded,
+		ConvID:  convHex,
+		Payload: json.RawMessage(`{"event":"member.added","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
+	})
 	return nil
 }
 
