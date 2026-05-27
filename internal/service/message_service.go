@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,7 +73,11 @@ func (s *MessageService) SendMessage(
 	arg.CreatedAt = now
 	arg.UpdatedAt = now
 
-	go s.afterSend(context.Background(), arg)
+	go s.afterSend(context.Background(), &model.MessageWithMeta{
+		Message:     arg,
+		Attachments: []*model.Attachment{},
+		Reactions:   []*model.MessageReaction{},
+	})
 
 	return arg, nil
 }
@@ -96,6 +99,15 @@ func (s *MessageService) SendMessageWithAttachment(
 	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
+	}
+	for _, att := range attachments {
+		if len(att.ID) == 0 {
+			att.ID, err = crypto.NewUUIDv7Bytes()
+			if err != nil {
+				return nil, ae.Internal(err)
+			}
+		}
+		att.MessageID = mID
 	}
 	arg := &model.Message{
 		ID:             mID,
@@ -123,32 +135,30 @@ func (s *MessageService) SendMessageWithAttachment(
 		att.CreatedAt = now
 	}
 
-	go s.afterSend(context.Background(), arg)
-
-	return &model.MessageWithMeta{
+	msgWithMeta := &model.MessageWithMeta{
 		Message:     arg,
 		Attachments: attachments,
 		Reactions:   []*model.MessageReaction{},
-	}, nil
+	}
+	go s.afterSend(context.Background(), msgWithMeta)
+
+	return msgWithMeta, nil
 }
 
-func (s *MessageService) afterSend(ctx context.Context, msg *model.Message) {
+func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.MessageWithMeta) {
+	msg := msgWithMeta.Message
 	convHex := hex.EncodeToString(msg.ConversationID)
 	senderHex := hex.EncodeToString(msg.SenderID)
-	msgHex := hex.EncodeToString(msg.ID)
 
 	// Fan-out to members (pubsub)
-	payload := map[string]any{
-		"event":     redis.EventNewMessage,
-		"msg_id":    msgHex,
-		"conv_id":   convHex,
-		"sender_id": senderHex,
-		"seq":       msg.Seq,
-		"type":      msg.Type,
+	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err == nil && sender != nil {
+		msgWithMeta.SenderName = sender.Username
+		msgWithMeta.SenderAvatarURL = sender.AvatarURL
 	}
-	raw, err := g.PubSub.ToJsonRawMessage(payload)
-	if err != nil {
-		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload: %v", zap.Error(err))
+	raw := messageNewPayload(msgWithMeta)
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload",
+			zap.String("msg_id", hex.EncodeToString(msg.ID)))
 		return
 	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
@@ -435,14 +445,9 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 		_ = cache.SetUnread(ctx, userID, convID, unread)
 	}
 
-	payload := map[string]interface{}{
-		"event":            redis.EventReadMessage,
-		"user_id":          hex.EncodeToString(userID),
-		"last_read_msg_id": hex.EncodeToString(lastReadMsgID),
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		g.Logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload: %v", zap.Error(err))
+	raw := messageReadPayload(convID, userID, lastReadMsgID, time.Now())
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload")
 		return nil
 	}
 	_ = g.PubSub.Publish(ctx, convID, redis.Event{
@@ -493,15 +498,10 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content)
 	}()
 
-	payload := map[string]interface{}{
-		"event":     redis.EventEditMessage,
-		"msg_id":    hex.EncodeToString(msgID),
-		"content":   newContent,
-		"edited_at": msg.UpdatedAt.Format(time.RFC3339Nano),
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		g.Logger.Error("messageService.EditMessage: failed to marshal pubsub payload: %v", zap.Error(err))
+	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
+	raw := messageEditedPayload(msg, sender)
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.EditMessage: failed to marshal pubsub payload")
 		return msg, nil
 	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
@@ -549,13 +549,9 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText)
 	}()
 
-	payload := map[string]interface{}{
-		"event":  redis.EventDelMessage,
-		"msg_id": hex.EncodeToString(msgID),
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		g.Logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload: %v", zap.Error(err))
+	raw := messageDeletedPayload(msg.ConversationID, msgID, time.Now())
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload")
 		return nil
 	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
@@ -603,16 +599,9 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 		action = "removed"
 	}
 
-	payload := map[string]interface{}{
-		"event":   redis.EventToggleReaction,
-		"msg_id":  hex.EncodeToString(msgID),
-		"user_id": hex.EncodeToString(userID),
-		"emoji":   emoji,
-		"action":  action,
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		g.Logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload: %v", zap.Error(err))
+	raw := reactionTogglePayload(msg.ConversationID, msgID, userID, emoji, action)
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload")
 		return action, nil
 	}
 	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{

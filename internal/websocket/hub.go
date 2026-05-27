@@ -68,10 +68,12 @@ func (h *Hub) Run(ctx context.Context) {
 // Subscribe Redis channels cho tất cả conv + sys:{uid} của user.
 func (h *Hub) Register(client *Client, convIDs [][]byte) {
 	newChannels := make([]string, 0, len(client.convs)+1)
+	firstSession := false
 	//client mapp
 	h.clientsMu.Lock()
 	if _, ok := h.clients[client.uidHex]; !ok {
 		h.clients[client.uidHex] = make(map[string]*Client)
+		firstSession = true
 	}
 	h.clients[client.uidHex][client.ConnID] = client
 	h.clientsMu.Unlock()
@@ -84,6 +86,8 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 			newChannels = append(newChannels, ch)
 		}
 		h.channels[ch][client.uidHex] = struct{}{}
+
+		client.addConv(hex.EncodeToString(cid))
 	}
 	sysCh := sysChannel(client.uidHex)
 	if _, ok := h.channels[sysCh]; !ok {
@@ -98,6 +102,9 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 			h.log.Warn("pubsub subscribe failed", zap.Strings("channels", newChannels), zap.Error(err))
 		}
 	}
+	if firstSession {
+		h.broadcastPresence(client.uidHex, client.snapshotConvs(), true)
+	}
 }
 
 // Unregister xóa client khỏi Hub khi WS disconnect.
@@ -105,6 +112,7 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 func (h *Hub) Unregister(client *Client) {
 	// Remove this session (conn) from clients map. If user has no more sessions,
 	// remove uid entries from channels and schedule redis unsubscribe.
+	convIDs := client.snapshotConvs()
 
 	h.clientsMu.Lock()
 	sessions, ok := h.clients[client.uidHex]
@@ -139,6 +147,8 @@ func (h *Hub) Unregister(client *Client) {
 	// Close send channel (idempotent via closeSend)
 	client.closeSend()
 
+	h.rm.ClearSession(client.uid, client.ConnID)
+
 	// Clear viewing state for this specific user (if offline)
 	if !stillOnline {
 		h.rm.ClearAll(client.uid)
@@ -148,6 +158,7 @@ func (h *Hub) Unregister(client *Client) {
 		} else {
 			_ = h.rdb.Del(context.Background(), presenceKey(client.uidHex)).Err()
 		}
+		h.broadcastPresence(client.uidHex, convIDs, false)
 	}
 
 	// Unsubscribe Redis channels that are now empty
@@ -162,11 +173,13 @@ func (h *Hub) dispatchAndIntercept(channel string, payload []byte) {
 	// Intercept domain membership events (member.added/member.removed)
 	h.interceptMembership(payload)
 
-	// Then dispatch the original payload to subscribed clients.
-	h.dispatchToClients(channel, payload)
+	// Then dispatch the client-facing event payload to subscribed clients.
+	h.dispatchToClients(channel, clientPayloadForPayload(payload))
 }
 
 func (h *Hub) dispatchToClients(channel string, payload []byte) {
+	skipUID := skipUIDForPayload(payload)
+
 	h.channelsMu.RLock()
 	uids, ok := h.channels[channel]
 	if !ok { // No subscribers
@@ -177,6 +190,9 @@ func (h *Hub) dispatchToClients(channel string, payload []byte) {
 	targets := make([]*Client, 0)
 	h.clientsMu.RLock()
 	for uid := range uids {
+		if uid == skipUID {
+			continue
+		}
 		if sessions, ok := h.clients[uid]; ok {
 			for _, c := range sessions {
 				targets = append(targets, c)
@@ -196,11 +212,68 @@ func (h *Hub) dispatchToClients(channel string, payload []byte) {
 	}
 }
 
-// Đây là cơ chế Hub tự biết cần subscribe/unsubscribe mà không cần service ra lệnh.
-// Service publish "member.added" → Hub intercept → xử lý subscription autonomously.
-func (h *Hub) interceptMembership(payload []byte) {
-	var evt DomainEvent
+func skipUIDForPayload(payload []byte) string {
+	var evt struct {
+		Event   string          `json:"event"`
+		UserID  string          `json:"user_id"`
+		Payload json.RawMessage `json:"Payload"`
+	}
 	if err := json.Unmarshal(payload, &evt); err != nil {
+		return ""
+	}
+	if evt.Event == OutboundTyping {
+		return strings.ToLower(strings.TrimSpace(evt.UserID))
+	}
+	if evt.Event == OutboundMemberAdded {
+		return strings.ToLower(strings.TrimSpace(evt.UserID))
+	}
+	if evt.Event == OutboundMemberRemoved {
+		return strings.ToLower(strings.TrimSpace(evt.UserID))
+	}
+
+	if len(evt.Payload) == 0 {
+		return ""
+	}
+	var nested struct {
+		Event  string `json:"event"`
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(evt.Payload, &nested); err != nil {
+		return ""
+	}
+	if nested.Event == OutboundTyping {
+		return strings.ToLower(strings.TrimSpace(nested.UserID))
+	}
+	if nested.Event == OutboundMemberAdded {
+		return strings.ToLower(strings.TrimSpace(nested.UserID))
+	}
+	if nested.Event == OutboundMemberRemoved {
+		return strings.ToLower(strings.TrimSpace(nested.UserID))
+	}
+	return ""
+}
+
+func clientPayloadForPayload(payload []byte) []byte {
+	var wrapped struct {
+		Payload json.RawMessage `json:"Payload"`
+	}
+	if err := json.Unmarshal(payload, &wrapped); err == nil && len(wrapped.Payload) > 0 {
+		return wrapped.Payload
+	}
+
+	var wrappedLower struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(payload, &wrappedLower); err == nil && len(wrappedLower.Payload) > 0 {
+		return wrappedLower.Payload
+	}
+	return payload
+}
+
+// Hub observes membership events and updates local subscriptions for online users.
+func (h *Hub) interceptMembership(payload []byte) {
+	evt, ok := decodeDomainEvent(payload)
+	if !ok {
 		return
 	}
 	if evt.UserID == "" || evt.ConvID == "" {
@@ -232,33 +305,234 @@ func (h *Hub) interceptMembership(payload []byte) {
 	}()
 }
 
+func decodeDomainEvent(payload []byte) (DomainEvent, bool) {
+	var evt DomainEvent
+	if err := json.Unmarshal(payload, &evt); err == nil && evt.Event != "" {
+		return evt, true
+	}
+
+	var wrapped struct {
+		Type    string          `json:"Type"`
+		ConvID  string          `json:"ConvID"`
+		Payload json.RawMessage `json:"Payload"`
+	}
+	if err := json.Unmarshal(payload, &wrapped); err != nil {
+		return DomainEvent{}, false
+	}
+	if wrapped.Type == "" && wrapped.ConvID == "" && len(wrapped.Payload) == 0 {
+		var lower struct {
+			Type    string          `json:"type"`
+			ConvID  string          `json:"conv_id"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(payload, &lower); err != nil {
+			return DomainEvent{}, false
+		}
+		wrapped.Type = lower.Type
+		wrapped.ConvID = lower.ConvID
+		wrapped.Payload = lower.Payload
+	}
+	if len(wrapped.Payload) > 0 {
+		if err := json.Unmarshal(wrapped.Payload, &evt); err == nil && evt.Event != "" {
+			return evt, true
+		}
+	}
+
+	if wrapped.Type == "" || wrapped.ConvID == "" {
+		return DomainEvent{}, false
+	}
+	return DomainEvent{
+		Event:  wrapped.Type,
+		ConvID: wrapped.ConvID,
+	}, true
+}
+
 func (h *Hub) handleSysEvent(chanel string, payload []byte) {
 	uidhex := strings.TrimPrefix(chanel, "sys:")
-	h.clientsMu.RLock()
-	sessions, online := h.clients[uidhex]
-	h.clientsMu.RUnlock()
+	sessions := h.sessionsForUser(uidhex)
 
-	if !online || len(sessions) == 0 {
+	if len(sessions) == 0 {
 		return
 	}
 
 	var cmd sysEvent
-	if err := json.Unmarshal(payload, &cmd); err != nil || cmd.ConvID == "" {
+	if err := json.Unmarshal(payload, &cmd); err != nil {
 		return
 	}
 
-	cidBytes, err := hex.DecodeString(cmd.ConvID)
-	if err != nil {
-		return
-	}
 	switch cmd.Type {
 	case SysConvSubscribe:
+		cidBytes, ok := decodeSysConvID(cmd.ConvID)
+		if !ok {
+			return
+		}
 		for _, client := range sessions {
 			h.subscribeLocalClient(client, cidBytes)
 		}
+		h.sendSysPayload(sessions, cmd.Payload)
 	case SysConvUnsubscribe:
+		cidBytes, ok := decodeSysConvID(cmd.ConvID)
+		if !ok {
+			return
+		}
 		for _, client := range sessions {
 			h.unsubscribeLocalClient(client, cidBytes)
+			h.rm.ClearViewing(cidBytes, client.uid, client.ConnID)
+		}
+		h.sendSysPayload(sessions, cmd.Payload)
+	case SysContactsSet:
+		for _, client := range sessions {
+			client.setContacts(cmd.UserIDs)
+		}
+	case SysContactsAdd:
+		for _, client := range sessions {
+			client.addContact(cmd.UserID)
+		}
+		h.sendPresenceSnapshot(sessions, cmd.UserID)
+	}
+}
+
+func decodeSysConvID(convID string) ([]byte, bool) {
+	cidHex := strings.ToLower(strings.TrimSpace(convID))
+	cidBytes, err := hex.DecodeString(cidHex)
+	return cidBytes, err == nil && len(cidBytes) == 16
+}
+
+func (h *Hub) sendSysPayload(sessions []*Client, payload json.RawMessage) {
+	if len(payload) == 0 {
+		return
+	}
+	h.sendToTargets(sessions, payload)
+}
+
+func (h *Hub) sessionsForUser(uidHex string) []*Client {
+	h.clientsMu.RLock()
+	defer h.clientsMu.RUnlock()
+
+	sessionMap, ok := h.clients[uidHex]
+	if !ok {
+		return nil
+	}
+	sessions := make([]*Client, 0, len(sessionMap))
+	for _, client := range sessionMap {
+		sessions = append(sessions, client)
+	}
+	return sessions
+}
+
+func (h *Hub) broadcastPresence(uidHex string, convIDs []string, isOnline bool) {
+	h.broadcastPresenceToContacts(uidHex, isOnline)
+	h.broadcastPresenceToConvs(uidHex, convIDs, isOnline)
+}
+
+func (h *Hub) broadcastPresenceToContacts(uidHex string, isOnline bool) {
+	raw := presencePayload(uidHex, "", isOnline)
+	if len(raw) == 0 {
+		return
+	}
+
+	targets := make([]*Client, 0)
+	h.clientsMu.RLock()
+	for targetUID, sessions := range h.clients {
+		if targetUID == uidHex {
+			continue
+		}
+		for _, client := range sessions {
+			if client.hasContact(uidHex) {
+				targets = append(targets, client)
+			}
+		}
+	}
+	h.clientsMu.RUnlock()
+
+	h.sendToTargets(targets, raw)
+}
+
+func (h *Hub) broadcastPresenceToConvs(uidHex string, convIDs []string, isOnline bool) {
+	for _, cidHex := range convIDs {
+		if !isValidHexUID(cidHex) {
+			continue
+		}
+
+		raw := presencePayload(uidHex, cidHex, isOnline)
+		if len(raw) == 0 {
+			continue
+		}
+		h.sendToTargets(h.convPresenceTargets(uidHex, cidHex), raw)
+	}
+}
+
+func (h *Hub) convPresenceTargets(uidHex, cidHex string) []*Client {
+	ch := notifyChannelHex(cidHex)
+	targetUIDs := make([]string, 0)
+
+	h.channelsMu.RLock()
+	if uids, ok := h.channels[ch]; ok {
+		for targetUID := range uids {
+			if targetUID != uidHex {
+				targetUIDs = append(targetUIDs, targetUID)
+			}
+		}
+	}
+	h.channelsMu.RUnlock()
+
+	targets := make([]*Client, 0, len(targetUIDs))
+	h.clientsMu.RLock()
+	for _, targetUID := range targetUIDs {
+		for _, client := range h.clients[targetUID] {
+			targets = append(targets, client)
+		}
+	}
+	h.clientsMu.RUnlock()
+	return targets
+}
+
+func (h *Hub) sendPresenceSnapshot(targets []*Client, uidHex string) {
+	if !isValidHexUID(uidHex) {
+		return
+	}
+
+	raw := presencePayload(uidHex, "", h.isOnline(uidHex))
+	h.sendToTargets(targets, raw)
+}
+
+func (h *Hub) isOnline(uidHex string) bool {
+	uid, err := hex.DecodeString(uidHex)
+	if err != nil {
+		return false
+	}
+	if g.Presence != nil {
+		online, err := g.Presence.IsOnline(context.Background(), uid)
+		return err == nil && online
+	}
+	exists, err := h.rdb.Exists(context.Background(), presenceKey(uidHex)).Result()
+	return err == nil && exists > 0
+}
+
+func presencePayload(uidHex, cidHex string, isOnline bool) []byte {
+	payload := map[string]any{
+		"event":     OutboundPresence,
+		"user_id":   uidHex,
+		"is_online": isOnline,
+	}
+	if cidHex != "" {
+		payload["conv_id"] = cidHex
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func (h *Hub) sendToTargets(targets []*Client, payload []byte) {
+	for _, client := range targets {
+		select {
+		case client.send <- payload:
+		default:
+			h.log.Warn("client send buffer full, disconnecting", zap.String("uid", client.uidHex))
+			h.Unregister(client)
 		}
 	}
 }

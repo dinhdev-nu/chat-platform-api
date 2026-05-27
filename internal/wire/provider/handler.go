@@ -24,6 +24,6 @@ func NewMessageHandler(ms *s.MessageService) *h.MessageHandler {
 	return h.NewMessageHandler(ms)
 }
 
-func NewWebSocketHandler(hub *websocket.Hub, rm *websocket.RoomManager, rr r.RoomRepository, ur r.UserRepository, log *zap.Logger) *websocket.Handler {
-	return websocket.NewHandler(hub, rm, rr, ur, log)
+func NewWebSocketHandler(hub *websocket.Hub, rm *websocket.RoomManager, ms *s.MessageService, rr r.RoomRepository, ur r.UserRepository, log *zap.Logger) *websocket.Handler {
+	return websocket.NewHandler(hub, rm, ms, rr, ur, log)
 }

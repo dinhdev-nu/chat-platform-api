@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,11 +38,15 @@ type Client struct {
 
 	hub *Hub
 	rm  *RoomManager
+	mr  messageReadMarker
 	rdb *redis.Client
 	log *zap.Logger
 
 	convMu sync.RWMutex
 	convs  map[string]struct{} // hex conv_id
+
+	contMu sync.RWMutex        // presences của contact
+	conts  map[string]struct{} // hex uid
 }
 
 func NewClient(
@@ -50,6 +54,7 @@ func NewClient(
 	conn *gorillaws.Conn,
 	hub *Hub,
 	rm *RoomManager,
+	mr messageReadMarker,
 	rdb *redis.Client,
 	convIDs [][]byte,
 	log *zap.Logger,
@@ -66,9 +71,11 @@ func NewClient(
 		send:   make(chan []byte, sendBufferSize),
 		hub:    hub,
 		rm:     rm,
+		mr:     mr,
 		rdb:    rdb,
 		log:    log,
 		convs:  convSet,
+		conts:  make(map[string]struct{}),
 	}
 }
 
@@ -93,6 +100,61 @@ func (c *Client) hasConv(cidHex string) bool {
 	_, ok := c.convs[cidHex]
 	c.convMu.RUnlock()
 	return ok
+}
+
+func (c *Client) snapshotConvs() []string {
+	c.convMu.RLock()
+	defer c.convMu.RUnlock()
+
+	convIDs := make([]string, 0, len(c.convs))
+	for cidHex := range c.convs {
+		convIDs = append(convIDs, cidHex)
+	}
+	return convIDs
+}
+
+func (c *Client) setContacts(uidHexes []string) {
+	conts := make(map[string]struct{}, len(uidHexes))
+	for _, uidHex := range uidHexes {
+		if isValidHexUID(uidHex) && uidHex != c.uidHex {
+			conts[uidHex] = struct{}{}
+		}
+	}
+
+	c.contMu.Lock()
+	c.conts = conts
+	c.contMu.Unlock()
+}
+
+func (c *Client) addContact(uidHex string) {
+	if !isValidHexUID(uidHex) || uidHex == c.uidHex {
+		return
+	}
+
+	c.contMu.Lock()
+	if c.conts == nil {
+		c.conts = make(map[string]struct{})
+	}
+	c.conts[uidHex] = struct{}{}
+	c.contMu.Unlock()
+}
+
+func (c *Client) hasContact(uidHex string) bool {
+	c.contMu.RLock()
+	_, ok := c.conts[uidHex]
+	c.contMu.RUnlock()
+	return ok
+}
+
+func isValidHexUID(uidHex string) bool {
+	uid, err := hex.DecodeString(uidHex)
+	return err == nil && len(uid) == 16
+}
+
+func normalizeHexID(raw string) (string, []byte, bool) {
+	idHex := strings.ToLower(strings.TrimSpace(raw))
+	id, err := hex.DecodeString(idHex)
+	return idHex, id, err == nil && len(id) == 16
 }
 
 // readPump đọc message từ WS connection và xử lý chúng
@@ -197,9 +259,8 @@ func (c *Client) onTyping(payload json.RawMessage) {
 		return
 	}
 
-	fmt.Printf("User %s is typing in conversation %s\n", c.uidHex, p.ConvID)
-
-	if !c.hasConv(p.ConvID) {
+	convHex, _, ok := normalizeHexID(p.ConvID)
+	if !ok || !c.hasConv(convHex) {
 		c.log.Warn("ws typing for non-viewing conv",
 			zap.String("uid", c.uidHex),
 			zap.String("conv_id", p.ConvID),
@@ -208,13 +269,29 @@ func (c *Client) onTyping(payload json.RawMessage) {
 	}
 
 	ctx := context.Background()
-	_ = c.rdb.Set(ctx, typingKey(p.ConvID, c.uidHex), 1, typingTTL).Err()
-	payload, _ = json.Marshal(map[string]interface{}{
+	if err := c.rdb.Set(ctx, typingKey(convHex, c.uidHex), 1, typingTTL).Err(); err != nil {
+		c.log.Warn("ws typing ttl set failed",
+			zap.String("uid", c.uidHex),
+			zap.String("conv_id", convHex),
+			zap.Error(err),
+		)
+		return
+	}
+	typingPayload, err := json.Marshal(map[string]string{
 		"event":   "typing",
 		"user_id": c.uidHex,
-		"conv_id": p.ConvID,
+		"conv_id": convHex,
 	})
-	_ = c.rdb.Publish(ctx, notifyChannelHex(p.ConvID), payload).Err()
+	if err != nil {
+		return
+	}
+	if err := c.rdb.Publish(ctx, notifyChannelHex(convHex), typingPayload).Err(); err != nil {
+		c.log.Warn("ws typing publish failed",
+			zap.String("uid", c.uidHex),
+			zap.String("conv_id", convHex),
+			zap.Error(err),
+		)
+	}
 }
 
 func (c *Client) onViewing(payload json.RawMessage) {
@@ -222,14 +299,11 @@ func (c *Client) onViewing(payload json.RawMessage) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return
 	}
-	if !c.hasConv(p.ConvID) {
+	convHex, cid, ok := normalizeHexID(p.ConvID)
+	if !ok || !c.hasConv(convHex) {
 		return
 	}
-	cid, err := hex.DecodeString(p.ConvID)
-	if err != nil {
-		return
-	}
-	c.rm.SetViewing(cid, c.uid)
+	c.rm.SetViewing(cid, c.uid, c.ConnID)
 }
 
 func (c *Client) onLeft(payload json.RawMessage) {
@@ -237,15 +311,60 @@ func (c *Client) onLeft(payload json.RawMessage) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return
 	}
-	if !c.hasConv(p.ConvID) {
+	convHex, cid, ok := normalizeHexID(p.ConvID)
+	if !ok || !c.hasConv(convHex) {
 		return
 	}
-	cid, err := hex.DecodeString(p.ConvID)
-	if err != nil {
-		return
-	}
-	c.rm.ClearViewing(cid, c.uid)
+	c.rm.ClearViewing(cid, c.uid, c.ConnID)
 }
 
 func (c *Client) onRead(payload json.RawMessage) {
+	var p ReadPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return
+	}
+
+	convHex := strings.ToLower(strings.TrimSpace(p.ConvID))
+	if !c.hasConv(convHex) {
+		c.log.Warn("ws read for non-member conv",
+			zap.String("uid", c.uidHex),
+			zap.String("conv_id", p.ConvID),
+		)
+		return
+	}
+
+	_, convID, ok := normalizeHexID(convHex)
+	if !ok {
+		c.log.Warn("ws read invalid conv_id",
+			zap.String("uid", c.uidHex),
+			zap.String("conv_id", p.ConvID),
+		)
+		return
+	}
+
+	lastReadMsgHex := strings.ToLower(strings.TrimSpace(p.LastReadMsgID))
+	_, lastReadMsgID, ok := normalizeHexID(lastReadMsgHex)
+	if !ok {
+		c.log.Warn("ws read invalid last_read_msg_id",
+			zap.String("uid", c.uidHex),
+			zap.String("msg_id", lastReadMsgHex),
+		)
+		return
+	}
+
+	if c.mr == nil {
+		c.log.Warn("ws read marker unavailable", zap.String("uid", c.uidHex))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.mr.MarkAsRead(ctx, convID, c.uid, lastReadMsgID); err != nil {
+		c.log.Warn("ws mark as read failed",
+			zap.String("uid", c.uidHex),
+			zap.String("conv_id", convHex),
+			zap.String("msg_id", lastReadMsgHex),
+			zap.Error(err),
+		)
+	}
 }

@@ -29,7 +29,8 @@ type LeftPayload struct {
 	ConvID string `json:"conv_id"`
 }
 type ReadPayload struct {
-	ConvID string `json:"conv_id"`
+	ConvID        string `json:"conv_id"`
+	LastReadMsgID string `json:"last_read_msg_id"`
 }
 
 const (
@@ -46,11 +47,16 @@ type DomainEvent struct {
 const (
 	SysConvSubscribe   = "conv.subscribe"
 	SysConvUnsubscribe = "conv.unsubscribe"
+	SysContactsSet     = "contacts.set"
+	SysContactsAdd     = "contacts.add"
 )
 
 type sysEvent struct {
-	Type   string `json:"type"`    // SysConvSubscribe | SysConvUnsubscribe
-	ConvID string `json:"conv_id"` // hex conv_id
+	Type    string          `json:"type"`              // SysConvSubscribe | SysConvUnsubscribe | SysContactsSet | SysContactsAdd
+	ConvID  string          `json:"conv_id,omitempty"` // hex conv_id
+	UserID  string          `json:"user_id,omitempty"` // hex user_id
+	UserIDs []string        `json:"user_ids,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"` // optional client-facing event payload
 }
 
 const (

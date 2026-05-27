@@ -49,5 +49,7 @@ type ConversationListItem struct {
 	IsMuted     bool  `json:"is_muted"`
 	UnreadCount int64 `json:"unread_count"`
 
-	LastMessageText *string `json:"last_message_text,omitempty"`
+	LastMessageText   *string `json:"last_message_text,omitempty"`
+	MemberOnlineCount int     `json:"member_online_count"`
+	IsOnline          bool    `json:"is_online"`
 }

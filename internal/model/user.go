@@ -125,6 +125,7 @@ type SearchUser struct {
 	AvatarURL      *string        `json:"avatarUrl"`
 	Bio            *string        `json:"bio"`
 	LastSeenAt     *time.Time     `json:"lastSeenAt"`
+	IsOnline       *bool          `json:"isOnline,omitempty"`
 	OutgoingStatus *ContactStatus `json:"outgoingStatus,omitempty"`
 	IncomingStatus *ContactStatus `json:"incomingStatus,omitempty"`
 }

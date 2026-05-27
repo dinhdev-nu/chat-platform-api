@@ -25,14 +25,14 @@ const (
 type EventType string
 
 const (
-	EventConvCreated   EventType = "conv.created"
+	EventConvCreated   EventType = "conversation.created"
 	EventMemberAdded   EventType = "member.added"
 	EventMemberRemoved EventType = "member.removed"
 
 	EventNewMessage  EventType = "message.new"
 	EventReadMessage EventType = "message.read"
-	EventEditMessage EventType = "message.edit"
-	EventDelMessage  EventType = "message.del"
+	EventEditMessage EventType = "message.edited"
+	EventDelMessage  EventType = "message.deleted"
 
 	EventToggleReaction EventType = "reaction.toggle"
 )
