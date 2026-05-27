@@ -34,6 +34,17 @@ type ResultPage[T any] struct {
 	Limit      int     `json:"limit"`
 }
 
+const (
+	sysConvSubscribe   = "conv.subscribe"
+	sysConvUnsubscribe = "conv.unsubscribe"
+)
+
+type conversationSysEvent struct {
+	Type    string          `json:"type"`
+	ConvID  string          `json:"conv_id,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
 func NewRoomService(ur r.UserRepository, rr r.RoomRepository, mr r.MessageRepository) *RoomService {
 	return &RoomService{
 		userRepo: ur,
@@ -71,6 +82,11 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 			return nil, false, ae.New(ae.ErrConversationNotFound, "Conversation not found")
 		}
 		return conv, true, nil
+	}
+
+	currentUser, err := s.userRepo.FindByID(ctx, currentUID)
+	if err != nil {
+		return nil, false, ae.Internal(err)
 	}
 
 	// 3/ Create new room
@@ -112,6 +128,12 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 	if err != nil {
 		return nil, false, ae.Internal(err)
 	}
+
+	memberIDs := [][]byte{currentUID, targetUserID}
+	currentItem := conversationListItemForUser(ctx, conv, currentUID, model.RoleMember, false, targetUser, memberIDs)
+	targetItem := conversationListItemForUser(ctx, conv, targetUserID, model.RoleMember, false, currentUser, memberIDs)
+	s.publishConvSubscribe(currentUID, convID, conversationCreatedPayload(currentItem))
+	s.publishConvSubscribe(targetUserID, convID, conversationCreatedPayload(targetItem))
 
 	return conv, false, nil
 }
@@ -234,12 +256,21 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 	// _ = g.PubSub.Publish(ctx, convID, redis.Event{
 	// 	Type:    redis.EventConvCreated,
 	// 	ConvID:  convHex,
-	// 	Payload: json.RawMessage(`{"event":"conv.created","conv_id":"` + convHex + `"}`),
+	// 	Payload: json.RawMessage(`{"event":"conversation.created","conv_id":"` + convHex + `"}`),
 	// })
 
 	conv, err := s.roomRepo.GetConversationByID(ctx, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
+	}
+
+	for i, memberID := range allMemberIDs {
+		role := model.RoleMember
+		if i == 0 {
+			role = model.RoleAdmin
+		}
+		item := conversationListItemForUser(ctx, conv, memberID, role, false, nil, allMemberIDs)
+		s.publishConvSubscribe(memberID, convID, conversationCreatedPayload(item))
 	}
 
 	return conv, nil
@@ -440,11 +471,25 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 	}()
 	// Push notification
 	convHex := hex.EncodeToString(convUID)
+	actor := userSummaryFromParts(actorUID, actorName, nil)
+	if actorUser, err := s.userRepo.FindByID(ctx, actorUID); err == nil && actorUser != nil {
+		actor = userSummaryFromUser(actorUser)
+	}
+	member := userSummaryFromUser(targetUser)
+	payload := memberPayload(redis.EventMemberAdded, convUID, targetUID, member, actor, nil)
 	_ = g.PubSub.Publish(ctx, convUID, redis.Event{
 		Type:    redis.EventMemberAdded,
 		ConvID:  convHex,
-		Payload: json.RawMessage(`{"event":"member.added","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
+		Payload: payload,
 	})
+	targetPayload := payload
+	conv, err := s.roomRepo.GetConversationByID(ctx, convUID)
+	if err == nil && conv != nil {
+		memberIDs, _ := s.roomRepo.GetConversationMemberIDs(ctx, convUID)
+		item := conversationListItemForUser(ctx, conv, targetUID, model.RoleMember, false, nil, memberIDs)
+		targetPayload = memberPayload(redis.EventMemberAdded, convUID, targetUID, member, actor, &item)
+	}
+	s.publishConvSubscribe(targetUID, convUID, targetPayload)
 	return nil
 }
 
@@ -465,8 +510,9 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 
 	// 2/ Kiểm tra target user exists
 	targetName := actorName
+	var targetUser *model.User
 	if !isSelf {
-		targetUser, err := s.userRepo.FindByID(ctx, targetUID)
+		targetUser, err = s.userRepo.FindByID(ctx, targetUID)
 		if err != nil {
 			return ae.Internal(err)
 		}
@@ -519,13 +565,57 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 
 	// Push notification
 	convHex := hex.EncodeToString(convID)
+	actor := userSummaryFromParts(actorUID, actorName, nil)
+	if actorUser, err := s.userRepo.FindByID(ctx, actorUID); err == nil && actorUser != nil {
+		actor = userSummaryFromUser(actorUser)
+	}
+	member := userSummaryFromParts(targetUID, targetName, nil)
+	if targetUser != nil {
+		member = userSummaryFromUser(targetUser)
+	} else if isSelf {
+		member = actor
+	}
+	payload := memberPayload(redis.EventMemberRemoved, convID, targetUID, member, actor, nil)
 	_ = g.PubSub.Publish(ctx, convID, redis.Event{
 		Type:    redis.EventMemberRemoved,
 		ConvID:  convHex,
-		Payload: json.RawMessage(`{"event":"member.removed","conv_id":"` + convHex + `","user_id":"` + hex.EncodeToString(targetUID) + `"}`),
+		Payload: payload,
 	})
+	s.publishConvUnsubscribe(targetUID, convID, payload)
 
 	return nil
+}
+
+func (s *RoomService) publishConvSubscribe(userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(userID, conversationSysEvent{
+		Type:    sysConvSubscribe,
+		ConvID:  hex.EncodeToString(convID),
+		Payload: payload,
+	})
+}
+
+func (s *RoomService) publishConvUnsubscribe(userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(userID, conversationSysEvent{
+		Type:    sysConvUnsubscribe,
+		ConvID:  hex.EncodeToString(convID),
+		Payload: payload,
+	})
+}
+
+func (s *RoomService) publishConversationSysEvent(userID []byte, evt conversationSysEvent) {
+	if g.RedisClient == nil {
+		return
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = g.RedisClient.Publish(ctx, "sys:"+hex.EncodeToString(userID), payload).Err()
+	}()
 }
 
 func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (int64, error) {

@@ -33,15 +33,21 @@ var upgrader = gorillaws.Upgrader{
 type Handler struct {
 	hub *Hub
 	rm  *RoomManager
+	mr  messageReadMarker
 	rr  r.RoomRepository
 	ur  r.UserRepository
 	log *zap.Logger
 }
 
-func NewHandler(hub *Hub, rm *RoomManager, rr r.RoomRepository, ur r.UserRepository, log *zap.Logger) *Handler {
+type messageReadMarker interface {
+	MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error
+}
+
+func NewHandler(hub *Hub, rm *RoomManager, mr messageReadMarker, rr r.RoomRepository, ur r.UserRepository, log *zap.Logger) *Handler {
 	return &Handler{
 		hub: hub,
 		rm:  rm,
+		mr:  mr,
 		rr:  rr,
 		ur:  ur,
 		log: log,
@@ -85,7 +91,7 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		).Err()
 	}
 	// Tạo client mới và đăng ký vào hub
-	client := NewClient(user.ID, conn, h.hub, h.rm, h.hub.rdb, convIDs, h.log)
+	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
 	h.hub.Register(client, convIDs)
 
 	go client.writePump()
