@@ -229,6 +229,14 @@ Main outbound events: `typing` · `presence` · `message.new` · `message.read` 
 
 ## ⚙️ Worker
 
+Redis Stream workers run as a standalone process from `cmd/worker/main.go`. The API process should enqueue jobs and return quickly; it does not start workers inline.
+
+```bash
+make run-worker
+```
+
+Or directly:
+
 ```bash
 APP_ENV=local go run ./cmd/worker/main.go
 ```
@@ -254,11 +262,13 @@ APP_ENV=local go run ./cmd/worker/main.go
 ```bash
 make help           # List all make targets
 make run            # Run the API server
+make run-worker     # Run background worker
 make build          # Compile binary
 make tidy           # go mod tidy
 make lint           # golangci-lint
 go test ./...       # Run tests
 ```
+
 
 > The Makefile uses POSIX shell syntax. On Windows, use **Git Bash** or **WSL**.
 
