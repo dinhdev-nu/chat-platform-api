@@ -24,7 +24,6 @@ func NewContainer() *Container {
 
 	// infrastructure
 	jwt := provider.NewJWTManager()
-	mailQueue := provider.NewSendEmailQueueHandler()
 	roomManager := websocket.NewRoomManager()
 	roomViewer := roomManager
 	hub := websocket.NewHub(g.RedisClient, roomManager, g.Logger)
@@ -37,7 +36,7 @@ func NewContainer() *Container {
 	messageRepo := provider.NewMessageRepository()
 
 	// services
-	authService := provider.NewAuthService(userRepo, userTokenRepo, jwt, mailQueue)
+	authService := provider.NewAuthService(userRepo, userTokenRepo, jwt)
 	userService := provider.NewUserService(userRepo)
 	roomService := provider.NewRoomService(userRepo, roomRepo, messageRepo)
 	messageService := provider.NewMessageService(roomRepo, messageRepo, userRepo, roomViewer)

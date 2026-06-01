@@ -245,7 +245,7 @@ APP_ENV=local go run ./cmd/worker/main.go
 |---|---|---|
 | `email.send_otp` | `stream:email` | `email-workers` |
 
-> **Note:** `AuthService.SendOTP` currently uses the direct SMTP fallback. The Redis Stream enqueue path is implemented in `auth_service.go` but commented out.
+`AuthService.SendOTP` enqueues `email.send_otp`; only the worker process initializes SMTP and sends email.
 
 ---
 

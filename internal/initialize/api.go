@@ -27,7 +27,6 @@ func NewAPIApp() *APIApplication {
 	InitLogger()
 	InitMySQL()
 	InitRedis()
-	InitMailer()
 	r := InitRouter()
 
 	return &APIApplication{

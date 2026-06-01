@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dinhdev-nu/chat-platform-api/global"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
@@ -25,23 +24,20 @@ const (
 )
 
 type AuthService struct {
-	userRepo     r.UserRepository // 'u' viết thường vì tính đóng gói của go ( chỉ tương tác không can thiệp )
-	tokenRepo    r.UserTokenRepository
-	jwtManager   *jwt.JWTManager
-	emailHandler queue.Handler
+	userRepo   r.UserRepository // 'u' viết thường vì tính đóng gói của go ( chỉ tương tác không can thiệp )
+	tokenRepo  r.UserTokenRepository
+	jwtManager *jwt.JWTManager
 }
 
 func NewAuthService(
 	ur r.UserRepository,
 	tr r.UserTokenRepository,
 	jm *jwt.JWTManager,
-	eh queue.Handler,
 ) *AuthService {
 	return &AuthService{
-		userRepo:     ur,
-		tokenRepo:    tr,
-		jwtManager:   jm,
-		emailHandler: eh,
+		userRepo:   ur,
+		tokenRepo:  tr,
+		jwtManager: jm,
 	}
 }
 
@@ -81,21 +77,21 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		return nil, ar.Internal(err)
 	}
 
-	// Queue job gửi email OTP
 	payload := queue.SendOTPEmailPayload{
 		Email:        req.Email,
 		OTP:          otp,
 		IPAddress:    "", // Có thể thêm IP từ context nếu cần
 		ExpiresInMin: 5,
 	}
-	go s.sendDirectFallback(req.Email, payload)
-	// queue strea, sẽ triển khai sau
-	// if err := g.Stream.EnqueueJob(ctx, queue.JobSendOTPEmail, payload); err != nil {
-	// 	g.Logger.Warn("enqueue job failed, sending directly",
-	// 		zap.String("email", payload.Email),
-	// 		zap.Error(err))
-	// 	go s.sendDirectFallback(req.Email, payload)
-	// }
+	if err := g.Stream.EnqueueJob(ctx, queue.JobSendOTPEmail, payload); err != nil {
+		if cleanupErr := g.OTPStore.ClearSendState(ctx, req.Email); cleanupErr != nil {
+			g.Logger.Warn("failed to cleanup OTP after enqueue failure",
+				zap.String("email", req.Email),
+				zap.Error(cleanupErr),
+			)
+		}
+		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: %w", err))
+	}
 
 	return &dto.SendOTPResponse{
 		Message:   "OTP sent successfully",
@@ -234,7 +230,7 @@ func (s *AuthService) Logout(ctx context.Context, jti []byte) error {
 		return ar.Internal(err)
 	}
 	if err := s.tokenRepo.DeleteByJTI(ctx, jti); err != nil {
-		global.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
+		g.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
 	}
 
 	return nil
@@ -349,34 +345,4 @@ func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string)
 	}
 
 	return newUser, nil
-}
-
-// sendDirectFallback là phương án dự phòng khi enqueue job thất bại, đảm bảo OTP vẫn được gửi đến người dùng
-// Gửi
-func (s *AuthService) sendDirectFallback(email string, payload queue.SendOTPEmailPayload) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	data, err := json.Marshal(payload)
-	if err != nil {
-		global.Logger.Error("failed to marshal payload for direct email fallback",
-			zap.String("email", email),
-			zap.Error(err),
-		)
-		return
-	}
-
-	job := queue.Job{
-		Type:      queue.JobSendOTPEmail,
-		Payload:   data,
-		Attempt:   0,
-		CreatedAt: time.Now(),
-	}
-
-	if err := s.emailHandler.Handle(ctx, job); err != nil {
-		global.Logger.Error("direct email fallback failed",
-			zap.String("email", email),
-			zap.Error(err),
-		)
-	}
 }
