@@ -244,6 +244,10 @@ APP_ENV=local go run ./cmd/worker/main.go
 | Job type | Stream | Consumer group |
 |---|---|---|
 | `email.send_otp` | `stream:email` | `email-workers` |
+| `conversation.last_activity.update` | `stream:conversation` | `conversation-workers` |
+| `conversation.system_message.create` | `stream:conversation` | `conversation-workers` |
+| `auth.token_last_used.update` | `stream:auth` | `auth-workers` |
+| `user.last_seen.update` | `stream:user` | `user-workers` |
 
 `AuthService.SendOTP` enqueues `email.send_otp`; only the worker process initializes SMTP and sends email.
 

@@ -46,7 +46,7 @@ func NewContainer() *Container {
 	userHandler := provider.NewUserHandler(userService)
 	roomHandler := provider.NewRoomHandler(roomService)
 	messageHandler := provider.NewMessageHandler(messageService)
-	wsHandler := provider.NewWebSocketHandler(hub, roomManager, messageService, roomRepo, userRepo, g.Logger)
+	wsHandler := provider.NewWebSocketHandler(hub, roomManager, messageService, roomRepo, g.Logger)
 
 	return &Container{
 		AuthHandler:      authHandler,

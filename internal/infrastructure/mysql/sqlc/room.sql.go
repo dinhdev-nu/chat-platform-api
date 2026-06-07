@@ -401,19 +401,27 @@ func (q *Queries) ListConversationsNextPage(ctx context.Context, arg ListConvers
 
 const updateConversationLastActivity = `-- name: UpdateConversationLastActivity :exec
 UPDATE conversations
-SET last_message_id = ?, last_message_text = ?, last_activity_at = NOW(3), updated_at = NOW(3)
-WHERE id = ?
+SET last_message_id = ?, last_message_text = ?, last_activity_at = ?, updated_at = NOW(3)
+WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at <= ?)
 `
 
 type UpdateConversationLastActivityParams struct {
-	LastMessageID   sql.NullString
-	LastMessageText sql.NullString
-	ID              []byte
+	LastMessageID    sql.NullString
+	LastMessageText  sql.NullString
+	LastActivityAt   *time.Time
+	ID               []byte
+	LastActivityAt_2 *time.Time
 }
 
 // Gọi bởi Kafka worker async sau khi gửi tin nhắn.
 func (q *Queries) UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error {
-	_, err := q.db.ExecContext(ctx, updateConversationLastActivity, arg.LastMessageID, arg.LastMessageText, arg.ID)
+	_, err := q.db.ExecContext(ctx, updateConversationLastActivity,
+		arg.LastMessageID,
+		arg.LastMessageText,
+		arg.LastActivityAt,
+		arg.ID,
+		arg.LastActivityAt_2,
+	)
 	return err
 }
 

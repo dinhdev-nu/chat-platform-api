@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
+	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
@@ -21,6 +22,10 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
+
+type RoomViewer interface {
+	IsViewing(userID, convID []byte) bool
+}
 
 type MessageService struct {
 	roomRepo r.RoomRepository
@@ -72,6 +77,8 @@ func (s *MessageService) SendMessage(
 	now := time.Now()
 	arg.CreatedAt = now
 	arg.UpdatedAt = now
+
+	s.enqueueConversationLastActivity(ctx, arg.ConversationID, arg.ID, arg.Content, arg.CreatedAt)
 
 	go s.afterSend(context.Background(), &model.MessageWithMeta{
 		Message:     arg,
@@ -135,6 +142,8 @@ func (s *MessageService) SendMessageWithAttachment(
 		att.CreatedAt = now
 	}
 
+	s.enqueueConversationLastActivity(ctx, arg.ConversationID, arg.ID, arg.Content, arg.CreatedAt)
+
 	msgWithMeta := &model.MessageWithMeta{
 		Message:     arg,
 		Attachments: attachments,
@@ -143,111 +152,6 @@ func (s *MessageService) SendMessageWithAttachment(
 	go s.afterSend(context.Background(), msgWithMeta)
 
 	return msgWithMeta, nil
-}
-
-func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.MessageWithMeta) {
-	msg := msgWithMeta.Message
-	convHex := hex.EncodeToString(msg.ConversationID)
-	senderHex := hex.EncodeToString(msg.SenderID)
-
-	// Fan-out to members (pubsub)
-	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err == nil && sender != nil {
-		msgWithMeta.SenderName = sender.Username
-		msgWithMeta.SenderAvatarURL = sender.AvatarURL
-	}
-	raw := messageNewPayload(msgWithMeta)
-	if len(raw) == 0 {
-		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload",
-			zap.String("msg_id", hex.EncodeToString(msg.ID)))
-		return
-	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
-		Type:    redis.EventNewMessage,
-		ConvID:  convHex,
-		Payload: raw,
-	})
-
-	// Update unread counts (cache)
-	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
-	allOffMembers := make([][]byte, 0)
-	if err == nil {
-		for _, mID := range members {
-			if hex.EncodeToString(mID) == senderHex {
-				continue // skip sender
-			}
-			if s.roomViewer != nil && s.roomViewer.IsViewing(mID, msg.ConversationID) {
-				continue
-			}
-			allOffMembers = append(allOffMembers, mID)
-		}
-	}
-	if len(allOffMembers) > 0 {
-		go func(hit bool) {
-			bg := context.Background()
-			_ = cache.BatchIncrUnread(bg, allOffMembers, msg.ConversationID)
-			if hit {
-				_ = cache.RefreshTTL(bg, msg.ConversationID)
-			}
-		}(cacheHit)
-	}
-
-	// Warm cache asynchronously
-	if err == nil && !cacheHit && len(members) > 0 {
-		go func() {
-			_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
-		}()
-	}
-
-	// Last msg + act (stream worker) ( chưa triển khai ngay )
-	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
-}
-
-func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
-	members, err := cache.GetMembers(ctx, convID)
-	if err == nil && len(members) > 0 {
-		return members, true, nil
-	}
-	if err != nil {
-		g.Logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
-	}
-
-	members, err = s.roomRepo.GetConversationMemberIDs(ctx, convID)
-	if err != nil {
-		return nil, false, ae.Internal(err)
-	}
-	return members, false, nil
-}
-
-func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
-	isMember, hit, err := cache.IsMember(ctx, convID, senderUID)
-	if err == nil && hit {
-		if isMember {
-			return nil
-		}
-		// Negative cache can be stale immediately after a member is added.
-		// Verify against DB before denying access.
-	}
-
-	// Fallback db
-	role, err := s.roomRepo.GetMemberRole(ctx, convID, senderUID)
-	if err != nil {
-		return ae.Internal(err)
-	}
-	if role == 0 {
-		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
-	}
-	return nil
-}
-
-func (s *MessageService) getMemberRoleRequired(ctx context.Context, convID, userID []byte) (model.MemberRole, error) {
-	role, err := s.roomRepo.GetMemberRole(ctx, convID, userID)
-	if err != nil {
-		return 0, ae.Internal(err)
-	}
-	if role == 0 {
-		return 0, ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
-	}
-	return role, nil
 }
 
 func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, cursor *string, limit int) (*ResultPage[*model.MessageWithMeta], error) {
@@ -491,12 +395,7 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.New(ae.ErrCannotEditMessage, "Edit window expired (24h) or message not found")
 	}
 
-	go func() {
-		// ctx with timeout
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content)
-	}()
+	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content, msg.UpdatedAt)
 
 	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
 	raw := messageEditedPayload(msg, sender)
@@ -541,13 +440,8 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 		return ae.Internal(err)
 	}
 
-	go func() {
-		// ctx with timeout
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		msgText := "Message deleted"
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText)
-	}()
+	msgText := "Message deleted"
+	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, &msgText, time.Now())
 
 	raw := messageDeletedPayload(msg.ConversationID, msgID, time.Now())
 	if len(raw) == 0 {
@@ -636,4 +530,144 @@ func decodeMsgCursor(cursor string) (time.Time, uint64, error) {
 func encodeMsgCursor(ts time.Time, seq uint64) string {
 	raw := fmt.Sprintf("%d:%d", ts.UnixMilli(), seq)
 	return base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
+func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.MessageWithMeta) {
+	msg := msgWithMeta.Message
+	convHex := hex.EncodeToString(msg.ConversationID)
+	senderHex := hex.EncodeToString(msg.SenderID)
+
+	// Fan-out to members (pubsub)
+	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err == nil && sender != nil {
+		msgWithMeta.SenderName = sender.Username
+		msgWithMeta.SenderAvatarURL = sender.AvatarURL
+	}
+	raw := messageNewPayload(msgWithMeta)
+	if len(raw) == 0 {
+		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload",
+			zap.String("msg_id", hex.EncodeToString(msg.ID)))
+		return
+	}
+	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+		Type:    redis.EventNewMessage,
+		ConvID:  convHex,
+		Payload: raw,
+	})
+
+	// Update unread counts (cache)
+	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
+	allOffMembers := make([][]byte, 0)
+	if err == nil {
+		for _, mID := range members {
+			if hex.EncodeToString(mID) == senderHex {
+				continue // skip sender
+			}
+			if s.roomViewer != nil && s.roomViewer.IsViewing(mID, msg.ConversationID) {
+				continue
+			}
+			allOffMembers = append(allOffMembers, mID)
+		}
+	}
+	if len(allOffMembers) > 0 {
+		go func(hit bool) {
+			bg := context.Background()
+			_ = cache.BatchIncrUnread(bg, allOffMembers, msg.ConversationID)
+			if hit {
+				_ = cache.RefreshTTL(bg, msg.ConversationID)
+			}
+		}(cacheHit)
+	}
+
+	// Warm cache asynchronously
+	if err == nil && !cacheHit && len(members) > 0 {
+		go func() {
+			_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
+		}()
+	}
+
+}
+
+func (s *MessageService) enqueueConversationLastActivity(ctx context.Context, convID, msgID []byte, text *string, activityAt time.Time) {
+	payload := queue.ConversationLastActivityPayload{
+		ConversationID: convID,
+		MessageID:      msgID,
+		MessageText:    text,
+		ActivityAt:     activityAt,
+	}
+	if g.Stream == nil {
+		g.Logger.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.String("msg_id", hex.EncodeToString(msgID)),
+		)
+		s.updateConversationLastActivityFallback(convID, msgID, text, activityAt)
+		return
+	}
+	if err := g.Stream.EnqueueJob(ctx, queue.JobUpdateConversationLastActivity, payload); err != nil {
+		g.Logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.Error(err),
+		)
+		s.updateConversationLastActivityFallback(convID, msgID, text, activityAt)
+	}
+}
+
+func (s *MessageService) updateConversationLastActivityFallback(convID, msgID []byte, text *string, activityAt time.Time) {
+	fallbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if fallbackErr := s.roomRepo.UpdateConversationLastActivity(fallbackCtx, convID, msgID, text, activityAt); fallbackErr != nil {
+		g.Logger.Error("messageService: sync fallback update last activity failed",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.Error(fallbackErr),
+		)
+	}
+}
+
+func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
+	members, err := cache.GetMembers(ctx, convID)
+	if err == nil && len(members) > 0 {
+		return members, true, nil
+	}
+	if err != nil {
+		g.Logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
+	}
+
+	members, err = s.roomRepo.GetConversationMemberIDs(ctx, convID)
+	if err != nil {
+		return nil, false, ae.Internal(err)
+	}
+	return members, false, nil
+}
+
+func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
+	isMember, hit, err := cache.IsMember(ctx, convID, senderUID)
+	if err == nil && hit {
+		if isMember {
+			return nil
+		}
+		// Negative cache can be stale immediately after a member is added.
+		// Verify against DB before denying access.
+	}
+
+	// Fallback db
+	role, err := s.roomRepo.GetMemberRole(ctx, convID, senderUID)
+	if err != nil {
+		return ae.Internal(err)
+	}
+	if role == 0 {
+		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+	}
+	return nil
+}
+
+func (s *MessageService) getMemberRoleRequired(ctx context.Context, convID, userID []byte) (model.MemberRole, error) {
+	role, err := s.roomRepo.GetMemberRole(ctx, convID, userID)
+	if err != nil {
+		return 0, ae.Internal(err)
+	}
+	if role == 0 {
+		return 0, ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+	}
+	return role, nil
 }

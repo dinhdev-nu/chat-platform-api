@@ -45,11 +45,17 @@ func (r *roomRepo) UpdateLastReadAt(ctx context.Context, convID, userID []byte, 
 	return nil
 }
 
-func (r *roomRepo) UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string) error {
+func (r *roomRepo) UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error {
+	if activityAt.IsZero() {
+		activityAt = time.Now()
+	}
+
 	err := r.q.UpdateConversationLastActivity(ctx, sqlc.UpdateConversationLastActivityParams{
-		LastMessageID:   ByteToNullString(lastMsgID),
-		LastMessageText: StringPtrToNullString(lastMsgText),
-		ID:              convID,
+		LastMessageID:    ByteToNullString(lastMsgID),
+		LastMessageText:  StringPtrToNullString(lastMsgText),
+		LastActivityAt:   &activityAt,
+		ID:               convID,
+		LastActivityAt_2: &activityAt,
 	})
 	if err != nil {
 		return fmt.Errorf("roomRepo.UpdateConversationLastActivity: %w", err)

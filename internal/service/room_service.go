@@ -13,12 +13,14 @@ import (
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
+	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
+	"go.uber.org/zap"
 )
 
 type RoomService struct {
@@ -225,31 +227,7 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 		_ = cache.WarmMember(context.Background(), convID, allMemberIDs)
 	}()
 
-	// Insert sytem message: "X created the group"
-	go func() {
-		bg := context.Background()
-		seqVal, err := GetNextSeqFromRedis(bg, s.msgRepo, convID)
-		if err != nil {
-			return
-		}
-		msgUUID, err := crypto.NewUUIDv7Bytes()
-		if err != nil {
-			return
-		}
-		content := "Group created"
-		arg := &model.Message{
-			ID:             msgUUID,
-			ConversationID: convID,
-			SenderID:       currentUID,
-			Content:        &content,
-			Seq:            uint64(seqVal),
-		}
-		if err := s.msgRepo.InsertSystemMessage(bg, arg); err != nil {
-			return
-		}
-		// Update conversation last message id/text
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, convID, arg.ID, arg.Content)
-	}()
+	s.enqueueSystemMessage(convID, currentUID, "Group created")
 
 	// // Push notification
 	// convHex := hex.EncodeToString(convID)
@@ -347,65 +325,6 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 	}, nil
 }
 
-func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID []byte, convs []*model.ConversationListRow) {
-	if len(convs) == 0 {
-		return
-	}
-
-	membersByConv := make(map[string][][]byte, len(convs))
-	uniqueMembers := make([][]byte, 0)
-	seen := make(map[string]struct{})
-
-	for _, conv := range convs {
-		members, err := cache.GetMembers(ctx, conv.ID)
-		if err != nil || len(members) == 0 {
-			members, err = s.roomRepo.GetConversationMemberIDs(ctx, conv.ID)
-			if err != nil {
-				continue
-			}
-			if len(members) > 0 {
-				go func(convID []byte, memberIDs [][]byte) {
-					_ = cache.WarmMember(context.Background(), convID, memberIDs)
-				}(conv.ID, members)
-			}
-		}
-
-		cidHex := hex.EncodeToString(conv.ID)
-		for _, memberID := range members {
-			if bytes.Equal(memberID, currentUID) {
-				continue
-			}
-
-			membersByConv[cidHex] = append(membersByConv[cidHex], memberID)
-			memberKey := string(memberID)
-			if _, ok := seen[memberKey]; ok {
-				continue
-			}
-			seen[memberKey] = struct{}{}
-			uniqueMembers = append(uniqueMembers, memberID)
-		}
-	}
-
-	onlineByID := make(map[string]bool, len(uniqueMembers))
-	if g.Presence != nil && len(uniqueMembers) > 0 {
-		if result, err := g.Presence.BulkIsOnline(ctx, uniqueMembers); err == nil {
-			onlineByID = result
-		}
-	}
-
-	for _, conv := range convs {
-		cidHex := hex.EncodeToString(conv.ID)
-		onlineCount := 0
-		for _, memberID := range membersByConv[cidHex] {
-			if onlineByID[hex.EncodeToString(memberID)] {
-				onlineCount++
-			}
-		}
-		conv.MemberOnlineCount = onlineCount
-		conv.IsOnline = onlineCount > 0
-	}
-}
-
 func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUID []byte, actorName string) error {
 	if bytes.Equal(actorUID, targetUID) {
 		return ae.New(ae.ErrInvalidInput, "Cannot add yourself")
@@ -445,30 +364,7 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 	if err := cache.AddMember(ctx, convUID, targetUID); err != nil {
 		_ = cache.InvalidateMembers(context.Background(), convUID)
 	}
-	// Insert system message: "X added Y"
-	go func() {
-		bg := context.Background()
-		seqVal, err := GetNextSeqFromRedis(bg, s.msgRepo, convUID)
-		if err != nil {
-			return
-		}
-
-		msgID, err := crypto.NewUUIDv7Bytes()
-		if err != nil {
-			return
-		}
-		content := fmt.Sprintf("%s added %s", actorName, targetUser.Username)
-
-		arg := &model.Message{
-			ID:             msgID,
-			ConversationID: convUID,
-			SenderID:       actorUID,
-			Content:        &content,
-			Seq:            uint64(seqVal),
-		}
-		_ = s.msgRepo.InsertSystemMessage(bg, arg)
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, convUID, arg.ID, arg.Content)
-	}()
+	s.enqueueSystemMessage(convUID, actorUID, fmt.Sprintf("%s added %s", actorName, targetUser.Username))
 	// Push notification
 	convHex := hex.EncodeToString(convUID)
 	actor := userSummaryFromParts(actorUID, actorName, nil)
@@ -536,32 +432,11 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		_ = cache.DeleteUnread(bg, targetUID, convID)
 	}()
 
-	// Insert system message: "X left/removed Y"
-	go func() {
-		bg := context.Background()
-		seqVal, err := GetNextSeqFromRedis(bg, s.msgRepo, convID)
-		if err != nil {
-			return
-		}
-		msgID, err := crypto.NewUUIDv7Bytes()
-		if err != nil {
-			return
-		}
-		action := "left"
-		if !isSelf {
-			action = "removed"
-		}
-		content := fmt.Sprintf("%s %s", targetName, action)
-		arg := &model.Message{
-			ID:             msgID,
-			ConversationID: convID,
-			SenderID:       actorUID,
-			Content:        &content,
-			Seq:            uint64(seqVal),
-		}
-		_ = s.msgRepo.InsertSystemMessage(bg, arg)
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, convID, arg.ID, arg.Content)
-	}()
+	action := "left"
+	if !isSelf {
+		action = "removed"
+	}
+	s.enqueueSystemMessage(convID, actorUID, fmt.Sprintf("%s %s", targetName, action))
 
 	// Push notification
 	convHex := hex.EncodeToString(convID)
@@ -584,38 +459,6 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 	s.publishConvUnsubscribe(targetUID, convID, payload)
 
 	return nil
-}
-
-func (s *RoomService) publishConvSubscribe(userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(userID, conversationSysEvent{
-		Type:    sysConvSubscribe,
-		ConvID:  hex.EncodeToString(convID),
-		Payload: payload,
-	})
-}
-
-func (s *RoomService) publishConvUnsubscribe(userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(userID, conversationSysEvent{
-		Type:    sysConvUnsubscribe,
-		ConvID:  hex.EncodeToString(convID),
-		Payload: payload,
-	})
-}
-
-func (s *RoomService) publishConversationSysEvent(userID []byte, evt conversationSysEvent) {
-	if g.RedisClient == nil {
-		return
-	}
-	payload, err := json.Marshal(evt)
-	if err != nil {
-		return
-	}
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = g.RedisClient.Publish(ctx, "sys:"+hex.EncodeToString(userID), payload).Err()
-	}()
 }
 
 func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (int64, error) {
@@ -689,4 +532,173 @@ func decodeCursor(cursor string) (time.Time, []byte, error) {
 func encodeCursor(t time.Time, id []byte) string {
 	payload := fmt.Sprintf("%d:%s", t.UnixMilli(), strings.ToUpper(hex.EncodeToString(id)))
 	return base64.StdEncoding.EncodeToString([]byte(payload))
+}
+
+func (s *RoomService) enqueueSystemMessage(convID, senderID []byte, content string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
+	if err != nil {
+		g.Logger.Error("roomService: failed to allocate system message seq",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.Error(err),
+		)
+		return
+	}
+
+	msgID, err := crypto.NewUUIDv7Bytes()
+	if err != nil {
+		g.Logger.Error("roomService: failed to create system message id",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.Error(err),
+		)
+		return
+	}
+
+	payload := queue.ConversationSystemMessagePayload{
+		ConversationID: convID,
+		MessageID:      msgID,
+		SenderID:       senderID,
+		Content:        content,
+		Seq:            uint64(seqVal),
+		ActivityAt:     time.Now(),
+	}
+	if g.Stream == nil {
+		g.Logger.Warn("roomService: stream unavailable for system message, applying sync fallback",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.String("msg_id", hex.EncodeToString(msgID)),
+		)
+		s.insertSystemMessageFallback(payload)
+		return
+	}
+	if err := g.Stream.EnqueueJob(ctx, queue.JobCreateConversationSystemMessage, payload); err != nil {
+		g.Logger.Warn("roomService: enqueue system message failed, applying sync fallback",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.Error(err),
+		)
+		s.insertSystemMessageFallback(payload)
+	}
+}
+
+func (s *RoomService) insertSystemMessageFallback(payload queue.ConversationSystemMessagePayload) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	content := payload.Content
+	msg := &model.Message{
+		ID:             payload.MessageID,
+		ConversationID: payload.ConversationID,
+		SenderID:       payload.SenderID,
+		Type:           model.MessageTypeSystem,
+		Content:        &content,
+		Seq:            payload.Seq,
+	}
+	if err := s.msgRepo.InsertSystemMessage(ctx, msg); err != nil {
+		g.Logger.Error("roomService: sync fallback insert system message failed",
+			zap.String("conv_id", hex.EncodeToString(payload.ConversationID)),
+			zap.String("msg_id", hex.EncodeToString(payload.MessageID)),
+			zap.Error(err),
+		)
+		return
+	}
+	if err := s.roomRepo.UpdateConversationLastActivity(ctx, payload.ConversationID, payload.MessageID, &content, payload.ActivityAt); err != nil {
+		g.Logger.Error("roomService: sync fallback update last activity failed",
+			zap.String("conv_id", hex.EncodeToString(payload.ConversationID)),
+			zap.String("msg_id", hex.EncodeToString(payload.MessageID)),
+			zap.Error(err),
+		)
+	}
+}
+
+func (s *RoomService) publishConvSubscribe(userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(userID, conversationSysEvent{
+		Type:    sysConvSubscribe,
+		ConvID:  hex.EncodeToString(convID),
+		Payload: payload,
+	})
+}
+
+func (s *RoomService) publishConvUnsubscribe(userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(userID, conversationSysEvent{
+		Type:    sysConvUnsubscribe,
+		ConvID:  hex.EncodeToString(convID),
+		Payload: payload,
+	})
+}
+
+func (s *RoomService) publishConversationSysEvent(userID []byte, evt conversationSysEvent) {
+	if g.RedisClient == nil {
+		return
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = g.RedisClient.Publish(ctx, "sys:"+hex.EncodeToString(userID), payload).Err()
+	}()
+}
+
+func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID []byte, convs []*model.ConversationListRow) {
+	if len(convs) == 0 {
+		return
+	}
+
+	membersByConv := make(map[string][][]byte, len(convs))
+	uniqueMembers := make([][]byte, 0)
+	seen := make(map[string]struct{})
+
+	for _, conv := range convs {
+		members, err := cache.GetMembers(ctx, conv.ID)
+		if err != nil || len(members) == 0 {
+			members, err = s.roomRepo.GetConversationMemberIDs(ctx, conv.ID)
+			if err != nil {
+				continue
+			}
+			if len(members) > 0 {
+				go func(convID []byte, memberIDs [][]byte) {
+					_ = cache.WarmMember(context.Background(), convID, memberIDs)
+				}(conv.ID, members)
+			}
+		}
+
+		cidHex := hex.EncodeToString(conv.ID)
+		for _, memberID := range members {
+			if bytes.Equal(memberID, currentUID) {
+				continue
+			}
+
+			membersByConv[cidHex] = append(membersByConv[cidHex], memberID)
+			memberKey := string(memberID)
+			if _, ok := seen[memberKey]; ok {
+				continue
+			}
+			seen[memberKey] = struct{}{}
+			uniqueMembers = append(uniqueMembers, memberID)
+		}
+	}
+
+	onlineByID := make(map[string]bool, len(uniqueMembers))
+	if g.Presence != nil && len(uniqueMembers) > 0 {
+		if result, err := g.Presence.BulkIsOnline(ctx, uniqueMembers); err == nil {
+			onlineByID = result
+		}
+	}
+
+	for _, conv := range convs {
+		cidHex := hex.EncodeToString(conv.ID)
+		onlineCount := 0
+		for _, memberID := range membersByConv[cidHex] {
+			if onlineByID[hex.EncodeToString(memberID)] {
+				onlineCount++
+			}
+		}
+		conv.MemberOnlineCount = onlineCount
+		conv.IsOnline = onlineCount > 0
+	}
 }

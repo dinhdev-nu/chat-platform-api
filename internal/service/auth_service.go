@@ -83,6 +83,15 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		IPAddress:    "", // Có thể thêm IP từ context nếu cần
 		ExpiresInMin: 5,
 	}
+	if g.Stream == nil {
+		if cleanupErr := g.OTPStore.ClearSendState(ctx, req.Email); cleanupErr != nil {
+			g.Logger.Warn("failed to cleanup OTP after unavailable stream",
+				zap.String("email", req.Email),
+				zap.Error(cleanupErr),
+			)
+		}
+		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: stream store unavailable"))
+	}
 	if err := g.Stream.EnqueueJob(ctx, queue.JobSendOTPEmail, payload); err != nil {
 		if cleanupErr := g.OTPStore.ClearSendState(ctx, req.Email); cleanupErr != nil {
 			g.Logger.Warn("failed to cleanup OTP after enqueue failure",
@@ -197,19 +206,13 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		if err != nil {
 			return nil, ar.Internal(err)
 		}
+		if len(jtisToEvict) > 0 {
+			if err := s.revokeSessions(jtisToEvict); err != nil {
+				return nil, ar.Internal(err)
+			}
+		}
 		if err := s.tokenRepo.DeleteOldestBeyondLimit(ctx, user.ID, maxDevicesPerUser); err != nil {
 			g.Logger.Warn("Failed to evict old devices", zap.Error(err))
-		}
-
-		if len(jtisToEvict) > 0 {
-			go func(ids [][]byte) {
-				bgCtx := context.Background() // 1 context mới để tránh bị hủy khi request kết thúc
-				for _, jti := range ids {
-					if err := g.Session.Revoke(bgCtx, jti); err != nil {
-						g.Logger.Warn("Failed to revoke session for evicted device", zap.Error(err))
-					}
-				}
-			}(jtisToEvict)
 		}
 	}
 
@@ -308,12 +311,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		g.Logger.Warn("Failed to set token last_used throttle", zap.Error(err))
 	}
 	if shouldUpdate {
-		go func() {
-			bgCtx := context.Background()
-			if err := s.tokenRepo.UpdateLastUsed(bgCtx, jti); err != nil {
-				g.Logger.Warn("Failed to update token last_used_at", zap.Error(err))
-			}
-		}()
+		s.enqueueTokenLastUsed(jti, time.Now())
 	}
 
 	return &user, jti, nil
@@ -345,4 +343,60 @@ func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string)
 	}
 
 	return newUser, nil
+}
+
+func (s *AuthService) revokeSessions(jtis [][]byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if g.Session == nil {
+		return fmt.Errorf("session store unavailable for evicted device revoke: count=%d", len(jtis))
+	}
+
+	var firstErr error
+	for _, jti := range jtis {
+		if len(jti) != 16 {
+			g.Logger.Warn("authService: skip invalid evicted session jti", zap.Int("jti_len", len(jti)))
+			continue
+		}
+		if err := g.Session.Revoke(ctx, jti); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			g.Logger.Warn("authService: failed to revoke evicted session",
+				zap.String("jti", hex.EncodeToString(jti)),
+				zap.Error(err),
+			)
+		}
+	}
+	if firstErr != nil {
+		return fmt.Errorf("revoke evicted sessions: %w", firstErr)
+	}
+	return nil
+}
+
+func (s *AuthService) enqueueTokenLastUsed(jti []byte, usedAt time.Time) {
+	jtiCopy := append([]byte(nil), jti...)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		payload := queue.AuthTokenLastUsedPayload{
+			JTI:    jtiCopy,
+			UsedAt: usedAt,
+		}
+		if g.Stream == nil {
+			g.Logger.Warn("authService: stream unavailable for token last_used update, dropping best-effort job",
+				zap.String("jti", hex.EncodeToString(jtiCopy)),
+			)
+			return
+		}
+		if err := g.Stream.EnqueueJob(ctx, queue.JobUpdateAuthTokenLastUsed, payload); err != nil {
+			g.Logger.Warn("authService: enqueue token last_used update failed, dropping best-effort job",
+				zap.String("jti", hex.EncodeToString(jtiCopy)),
+				zap.Error(err),
+			)
+		}
+	}()
 }
