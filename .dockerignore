@@ -1,0 +1,17 @@
+.git
+.gitignore
+.gocache
+.gocache-check
+bin
+docs
+logs
+public
+
+.env
+environment/local.yaml
+environment/production.yaml
+
+Dockerfile*
+compose*.yaml
+docker-compose*.yaml
+README.md

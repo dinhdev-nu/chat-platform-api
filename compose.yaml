@@ -1,0 +1,125 @@
+name: chat-platform
+
+x-app: &app
+  image: chat-platform-api:local
+  environment: &app-environment
+    APP_ENV: production
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chat_platform_mysql}
+    REDIS_PASSWORD: ${REDIS_PASSWORD:-chat_platform_redis}
+    JWT_SECRET: ${JWT_SECRET:-change-this-jwt-secret}
+    MAIL_FROM: ${MAIL_FROM:-noreply@example.com}
+    MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+  networks:
+    - backend
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-chat_platform_mysql}
+      MYSQL_DATABASE: chat_platform_api
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  redis:
+    image: redis:7.4-alpine
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD:-chat_platform_redis}",
+      ]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-chat_platform_redis}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep PONG',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - backend
+
+  migrate:
+    <<: *app
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        /app/schema &&
+        goose -dir /app/migrations mysql
+        "root:$${MYSQL_PASSWORD}@tcp(mysql:3306)/chat_platform_api?charset=utf8mb4&parseTime=true&loc=Local"
+        up
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - api_logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["/app/worker"]
+    volumes:
+      - worker_logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  api_logs:
+  worker_logs:
+
+networks:
+  backend:
+    driver: bridge

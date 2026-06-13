@@ -113,6 +113,35 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
+### Run with Docker Compose
+
+The application image is shared by the API, worker, and migration services.
+MySQL and Redis use their official images and do not need separate Dockerfiles.
+
+```bash
+# Build the application image and start the full stack
+docker compose up --build -d
+
+# Check container and health status
+docker compose ps
+
+# Follow API and worker logs
+docker compose logs -f api worker
+
+# Verify the API
+curl http://localhost:8080/health
+
+# Stop containers while keeping database data
+docker compose down
+
+# Stop containers and delete MySQL/Redis data
+docker compose down -v
+```
+
+Compose reads overrides such as `MYSQL_PASSWORD`, `REDIS_PASSWORD`,
+`JWT_SECRET`, `MAIL_FROM`, `MAIL_PASSWORD`, and `API_PORT` from the shell or
+the root `.env` file. Replace the development defaults before deployment.
+
 ---
 
 ## ⚙️ Configuration

@@ -1,0 +1,64 @@
+server:
+  port: 8080
+  host: 0.0.0.0
+  mode: production
+  readTimeout: 30
+  writeTimeout: 30
+  shutdownTimeout: 10
+
+mysql:
+  host: mysql
+  port: 3306
+  username: root
+  password: ${MYSQL_PASSWORD}
+  database: chat_platform_api
+  maxIdleConns: 20
+  maxOpenConns: 100
+  maxLifetime: 3600
+
+redis:
+  host: redis
+  port: 6379
+  password: ${REDIS_PASSWORD}
+  db: 3
+  poolSize: 100
+  minIdleConns: 10
+
+logger:
+  level: info
+  dir: /app/logs
+  maxSizeMB: 100
+  maxBackups: 10
+  maxAgeDays: 14
+  compress: true
+
+jwt:
+  secret: ${JWT_SECRET}
+  expireTime: 3600
+
+mail:
+  host: smtp.gmail.com
+  port: 465
+  from: ${MAIL_FROM}
+  password: ${MAIL_PASSWORD}
+  senderName: Chat Platform API
+
+cors:
+  allowedOrigins:
+    - http://localhost:3000
+  allowedMethods:
+    - GET
+    - POST
+    - PUT
+    - DELETE
+    - OPTIONS
+  allowedHeaders:
+    - Origin
+    - Content-Type
+    - Authorization
+    - Accept
+  exposeHeaders:
+    - Content-Length
+    - X-Request-Id
+  allowCredentials: true
+  corsMaxAge: 3600
