@@ -42,15 +42,19 @@ func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *mod
 		return nil, ae.Internal(err)
 	}
 
-	go func() {
+	go func(parent context.Context) {
+		cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)
+		defer cancel()
+
 		payload, err := json.Marshal(updated)
 		if err != nil {
+			g.Logger.Warn("userService.UpdateUser: failed to marshal user cache payload", zap.Error(err))
 			return
 		}
-		if err := g.Session.WarmUser(context.Background(), userID, string(payload)); err != nil {
+		if err := g.Session.WarmUser(cacheCtx, userID, string(payload)); err != nil {
 			g.Logger.Warn("failed to warm updated user cache", zap.Error(err))
 		}
-	}()
+	}(ctx)
 
 	return updated, nil
 }
@@ -285,9 +289,17 @@ func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte,
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
+		g.Logger.Warn("userService.publishContactSysEvent: failed to marshal event", zap.Error(err))
 		return
 	}
-	go func() {
-		_ = g.RedisClient.Publish(context.Background(), "sys:"+hex.EncodeToString(userID), payload).Err()
-	}()
+	go func(parent context.Context) {
+		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
+		defer cancel()
+		if err := g.RedisClient.Publish(publishCtx, "sys:"+hex.EncodeToString(userID), payload).Err(); err != nil {
+			g.Logger.Warn("userService.publishContactSysEvent: failed to publish event",
+				zap.String("user_id", hex.EncodeToString(userID)),
+				zap.Error(err),
+			)
+		}
+	}(ctx)
 }

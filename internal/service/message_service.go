@@ -73,7 +73,7 @@ func (s *MessageService) SendMessage(
 	arg.CreatedAt = now
 	arg.UpdatedAt = now
 
-	go s.afterSend(context.Background(), &model.MessageWithMeta{
+	go s.afterSend(ctx, &model.MessageWithMeta{
 		Message:     arg,
 		Attachments: []*model.Attachment{},
 		Reactions:   []*model.MessageReaction{},
@@ -124,7 +124,14 @@ func (s *MessageService) SendMessageWithAttachment(
 	}
 
 	if err := s.msgRepo.BatchInsertAttachments(ctx, attachments); err != nil {
-		_ = s.msgRepo.SoftDeleteMessage(context.Background(), mID)
+		cleanupCtx, cancel := detachedContext(ctx, sideEffectTimeout)
+		defer cancel()
+		if cleanupErr := s.msgRepo.SoftDeleteMessage(cleanupCtx, mID); cleanupErr != nil {
+			g.Logger.Error("messageService.SendMessageWithAttachment: failed to roll back message",
+				zap.String("msg_id", hex.EncodeToString(mID)),
+				zap.Error(cleanupErr),
+			)
+		}
 		return nil, ae.Internal(err)
 	}
 
@@ -140,18 +147,24 @@ func (s *MessageService) SendMessageWithAttachment(
 		Attachments: attachments,
 		Reactions:   []*model.MessageReaction{},
 	}
-	go s.afterSend(context.Background(), msgWithMeta)
+	asyncMessage := *msgWithMeta
+	go s.afterSend(ctx, &asyncMessage)
 
 	return msgWithMeta, nil
 }
 
-func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.MessageWithMeta) {
+func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.MessageWithMeta) {
+	ctx, cancel := detachedContext(parent, systemMessageTimeout)
+	defer cancel()
+
 	msg := msgWithMeta.Message
 	convHex := hex.EncodeToString(msg.ConversationID)
 	senderHex := hex.EncodeToString(msg.SenderID)
 
 	// Fan-out to members (pubsub)
-	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err == nil && sender != nil {
+	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err != nil {
+		g.Logger.Warn("messageService.afterSend: failed to load sender", zap.Error(err))
+	} else if sender != nil {
 		msgWithMeta.SenderName = sender.Username
 		msgWithMeta.SenderAvatarURL = sender.AvatarURL
 	}
@@ -161,16 +174,23 @@ func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.Messa
 			zap.String("msg_id", hex.EncodeToString(msg.ID)))
 		return
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+	if err := g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventNewMessage,
 		ConvID:  convHex,
 		Payload: raw,
-	})
+	}); err != nil {
+		g.Logger.Warn("messageService.afterSend: failed to publish message",
+			zap.String("msg_id", hex.EncodeToString(msg.ID)),
+			zap.Error(err),
+		)
+	}
 
 	// Update unread counts (cache)
 	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
 	allOffMembers := make([][]byte, 0)
-	if err == nil {
+	if err != nil {
+		g.Logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
+	} else {
 		for _, mID := range members {
 			if hex.EncodeToString(mID) == senderHex {
 				continue // skip sender
@@ -182,24 +202,26 @@ func (s *MessageService) afterSend(ctx context.Context, msgWithMeta *model.Messa
 		}
 	}
 	if len(allOffMembers) > 0 {
-		go func(hit bool) {
-			bg := context.Background()
-			_ = cache.BatchIncrUnread(bg, allOffMembers, msg.ConversationID)
-			if hit {
-				_ = cache.RefreshTTL(bg, msg.ConversationID)
+		if err := cache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
+			g.Logger.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
+		} else if cacheHit {
+			if err := cache.RefreshTTL(ctx, msg.ConversationID); err != nil {
+				g.Logger.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
 			}
-		}(cacheHit)
+		}
 	}
 
-	// Warm cache asynchronously
+	// The whole afterSend workflow is already asynchronous.
 	if err == nil && !cacheHit && len(members) > 0 {
-		go func() {
-			_ = cache.WarmMember(context.Background(), msg.ConversationID, members)
-		}()
+		if err := cache.WarmMember(ctx, msg.ConversationID, members); err != nil {
+			g.Logger.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
+		}
 	}
 
 	// Last msg + act (stream worker) ( chưa triển khai ngay )
-	_ = s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content)
+	if err := s.roomRepo.UpdateConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content); err != nil {
+		g.Logger.Warn("messageService.afterSend: failed to update conversation activity", zap.Error(err))
+	}
 }
 
 func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
@@ -372,13 +394,13 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		}
 
 		if g.Session != nil && len(dbUsers) > 0 {
-			go func() {
-				warmCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			go func(parent context.Context, users map[string]*model.User) {
+				warmCtx, cancel := detachedContext(parent, cacheTaskTimeout)
 				defer cancel()
-				if err := g.Session.WarmUsers(warmCtx, dbUsers); err != nil {
+				if err := g.Session.WarmUsers(warmCtx, users); err != nil {
 					g.Logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
 				}
-			}()
+			}(ctx, dbUsers)
 		}
 
 		return nil
@@ -491,12 +513,13 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.New(ae.ErrCannotEditMessage, "Edit window expired (24h) or message not found")
 	}
 
-	go func() {
-		// ctx with timeout
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func(parent context.Context) {
+		bg, cancel := detachedContext(parent, sideEffectTimeout)
 		defer cancel()
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content)
-	}()
+		if err := s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, msg.Content); err != nil {
+			g.Logger.Warn("messageService.EditMessage: failed to update conversation activity", zap.Error(err))
+		}
+	}(ctx)
 
 	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
 	raw := messageEditedPayload(msg, sender)
@@ -541,13 +564,14 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 		return ae.Internal(err)
 	}
 
-	go func() {
-		// ctx with timeout
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func(parent context.Context) {
+		bg, cancel := detachedContext(parent, sideEffectTimeout)
 		defer cancel()
 		msgText := "Message deleted"
-		_ = s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText)
-	}()
+		if err := s.roomRepo.UpdateConversationLastActivity(bg, msg.ConversationID, msg.ID, &msgText); err != nil {
+			g.Logger.Warn("messageService.DeleteMessage: failed to update conversation activity", zap.Error(err))
+		}
+	}(ctx)
 
 	raw := messageDeletedPayload(msg.ConversationID, msgID, time.Now())
 	if len(raw) == 0 {

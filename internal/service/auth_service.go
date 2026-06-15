@@ -87,13 +87,13 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		IPAddress:    "", // Có thể thêm IP từ context nếu cần
 		ExpiresInMin: 5,
 	}
-	go s.sendDirectFallback(req.Email, payload)
+	go s.sendDirectFallback(ctx, req.Email, payload)
 	// queue strea, sẽ triển khai sau
 	// if err := g.Stream.EnqueueJob(ctx, queue.JobSendOTPEmail, payload); err != nil {
 	// 	g.Logger.Warn("enqueue job failed, sending directly",
 	// 		zap.String("email", payload.Email),
 	// 		zap.Error(err))
-	// 	go s.sendDirectFallback(req.Email, payload)
+	// 	go s.sendDirectFallback(ctx, req.Email, payload)
 	// }
 
 	return &dto.SendOTPResponse{
@@ -205,14 +205,16 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		}
 
 		if len(jtisToEvict) > 0 {
-			go func(ids [][]byte) {
-				bgCtx := context.Background() // 1 context mới để tránh bị hủy khi request kết thúc
+			go func(parent context.Context, ids [][]byte) {
+				bgCtx, cancel := detachedContext(parent, sideEffectTimeout)
+				defer cancel()
+
 				for _, jti := range ids {
 					if err := g.Session.Revoke(bgCtx, jti); err != nil {
 						g.Logger.Warn("Failed to revoke session for evicted device", zap.Error(err))
 					}
 				}
-			}(jtisToEvict)
+			}(ctx, jtisToEvict)
 		}
 	}
 
@@ -311,12 +313,14 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		g.Logger.Warn("Failed to set token last_used throttle", zap.Error(err))
 	}
 	if shouldUpdate {
-		go func() {
-			bgCtx := context.Background()
+		go func(parent context.Context) {
+			bgCtx, cancel := detachedContext(parent, sideEffectTimeout)
+			defer cancel()
+
 			if err := s.tokenRepo.UpdateLastUsed(bgCtx, jti); err != nil {
 				g.Logger.Warn("Failed to update token last_used_at", zap.Error(err))
 			}
-		}()
+		}(ctx)
 	}
 
 	return &user, jti, nil
@@ -352,8 +356,8 @@ func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string)
 
 // sendDirectFallback là phương án dự phòng khi enqueue job thất bại, đảm bảo OTP vẫn được gửi đến người dùng
 // Gửi
-func (s *AuthService) sendDirectFallback(email string, payload queue.SendOTPEmailPayload) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func (s *AuthService) sendDirectFallback(parent context.Context, email string, payload queue.SendOTPEmailPayload) {
+	ctx, cancel := detachedContext(parent, emailTaskTimeout)
 	defer cancel()
 
 	data, err := json.Marshal(payload)

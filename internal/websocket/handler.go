@@ -97,11 +97,16 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	go client.writePump()
 	client.readPump()
 
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func(parent context.Context, userID []byte) {
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 		defer cancel()
-		_ = h.ur.UpdateLastSeenAt(bgCtx, user.ID)
-	}()
+		if err := h.ur.UpdateLastSeenAt(bgCtx, userID); err != nil {
+			h.log.Warn("failed to update user last seen",
+				zap.String("user_id", hex.EncodeToString(userID)),
+				zap.Error(err),
+			)
+		}
+	}(ctx, user.ID)
 }
 
 func getCurrentUser(c *gin.Context) (*model.User, bool) {
