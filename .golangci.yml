@@ -13,16 +13,13 @@ linters:
     - govet
     - ineffassign
     - nilerr
-
     - gosec
     - bodyclose
-
     - gocyclo
     - dupl
     - gocritic
     - revive
     - misspell
-    
     - prealloc
     - noctx
 

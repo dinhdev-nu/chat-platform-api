@@ -49,6 +49,14 @@ func (o *OTPStore) Delete(ctx context.Context, email string) error {
 	return o.client.Del(ctx, otpKey, attemptsKey).Err()
 }
 
+func (o *OTPStore) ClearSendState(ctx context.Context, email string) error {
+	otpKey := fmt.Sprintf(otpKey, email)
+	attemptsKey := fmt.Sprintf(otpAttemptsKey, email)
+	resendKey := fmt.Sprintf(otpResendKey, email)
+
+	return o.client.Del(ctx, otpKey, attemptsKey, resendKey).Err()
+}
+
 func (o *OTPStore) IncrAttempts(ctx context.Context, email string) (int64, error) {
 	key := fmt.Sprintf(otpAttemptsKey, email)
 

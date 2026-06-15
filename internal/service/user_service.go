@@ -276,7 +276,7 @@ func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []b
 	})
 }
 
-func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte, evt contactSysEvent) {
+func (s *UserService) publishContactSysEvent(_ context.Context, userID []byte, evt contactSysEvent) {
 	if g.RedisClient == nil {
 		return
 	}

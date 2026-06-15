@@ -18,7 +18,7 @@ type RoomRepository interface {
 
 	InsertConversationMember(ctx context.Context, memb *model.ConversationMember) error
 
-	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string) error
+	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
 	UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error
 
 	BatchInsertConversationMembers(ctx context.Context, membs []*model.ConversationMember) error

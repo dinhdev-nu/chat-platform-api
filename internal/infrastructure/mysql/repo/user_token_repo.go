@@ -123,11 +123,15 @@ func (r *userTokenRepo) FindByJTI(ctx context.Context, jti []byte) (*model.UserT
 	return g.ToDomain(), nil
 }
 
-func (r *userTokenRepo) UpdateLastUsed(ctx context.Context, jti []byte) error {
+func (r *userTokenRepo) UpdateLastUsed(ctx context.Context, jti []byte, usedAt time.Time) error {
+	if usedAt.IsZero() {
+		usedAt = time.Now()
+	}
+
 	err := r.db.WithContext(ctx).
 		Model(&gormmodel.UserToken{}).
-		Where("jti = ?", jti).
-		Update("last_used_at", time.Now()).Error
+		Where("jti = ? AND (last_used_at IS NULL OR last_used_at < ?)", jti, usedAt).
+		Update("last_used_at", usedAt).Error
 	if err != nil {
 		return fmt.Errorf("userTokenRepo.UpdateLastUsed: %w", err)
 	}

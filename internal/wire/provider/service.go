@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
@@ -11,9 +10,8 @@ func NewAuthService(
 	ur r.UserRepository,
 	tr r.UserTokenRepository,
 	jm *jwt.JWTManager,
-	eh queue.Handler,
 ) *s.AuthService {
-	return s.NewAuthService(ur, tr, jm, eh)
+	return s.NewAuthService(ur, tr, jm)
 }
 
 func NewUserService(ur r.UserRepository) *s.UserService {
