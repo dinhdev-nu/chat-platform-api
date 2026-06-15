@@ -1,0 +1,71 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  default: none
+  enable:
+    - staticcheck
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - nilerr
+
+    - gosec
+    - bodyclose
+
+    - gocyclo
+    - dupl
+    - gocritic
+    - revive
+    - misspell
+    
+    - prealloc
+    - noctx
+
+  settings:
+    gocyclo:
+      min-complexity: 20
+
+    dupl:
+      threshold: 200
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - commentedOutCode
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+
+  exclusions:
+    generated: lax
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - gosec
+          - dupl
+          - errcheck
+      - path: "pkg/errors/codes\\.go"
+        text: "G101:"
+        linters:
+          - gosec
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
