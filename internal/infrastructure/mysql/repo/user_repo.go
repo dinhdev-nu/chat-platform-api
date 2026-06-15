@@ -307,9 +307,15 @@ func (r *userRepo) Update(ctx context.Context, userID []byte, update *model.User
 	return nil
 }
 
-func (r *userRepo) UpdateLastSeenAt(ctx context.Context, userID []byte) error {
+func (r *userRepo) UpdateLastSeenAt(ctx context.Context, userID []byte, seenAt time.Time) error {
+	if seenAt.IsZero() {
+		seenAt = time.Now()
+	}
+
 	if err := r.db.WithContext(ctx).
-		Model(&gormmodel.User{}).Where("id = ?", userID).Update("last_seen_at", time.Now()).Error; err != nil {
+		Model(&gormmodel.User{}).
+		Where("id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)", userID, seenAt).
+		Update("last_seen_at", seenAt).Error; err != nil {
 		return fmt.Errorf("userRepo.UpdateLastSeenAt: %w", err)
 	}
 	return nil

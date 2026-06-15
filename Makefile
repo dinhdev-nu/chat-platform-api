@@ -1,6 +1,8 @@
 APP_ENV ?= local
-APP_NAME := chat-platform-api
-MAIN_PATH := ./cmd/api/main.go
+API_NAME := chat-platform-api
+WORKER_NAME := chat-platform-worker
+API_MAIN_PATH := ./cmd/api/main.go
+WORKER_MAIN_PATH := ./cmd/worker/main.go
 MIGRATION_DIR := ./internal/infrastructure/mysql/migrations
 DSN = "$(shell go run ./cmd/dsn/main.go)"
 
@@ -11,11 +13,19 @@ help: ## Show this help
 
 .PHONY: run
 run: ## Run the application
-	APP_ENV=$(APP_ENV) go run $(MAIN_PATH)
+	APP_ENV=$(APP_ENV) go run $(API_MAIN_PATH)
+
+.PHONY: run-worker
+run-worker: ## Run the standalone Redis Stream worker
+	APP_ENV=$(APP_ENV) go run $(WORKER_MAIN_PATH)
 
 .PHONY: build
 build: ## Build the application
-	go build -o bin/$(APP_NAME) $(MAIN_PATH)
+	go build -o bin/$(API_NAME) $(API_MAIN_PATH)
+
+.PHONY: build-worker
+build-worker: ## Build the standalone Redis Stream worker
+	go build -o bin/$(WORKER_NAME) $(WORKER_MAIN_PATH)
 
 .PHONY: tidy
 tidy: ## Tidy the Go modules
@@ -23,7 +33,7 @@ tidy: ## Tidy the Go modules
 
 .PHONY: clean
 clean: ## Clean the build artifacts
-	rm -rf bin/$(APP_NAME)
+	rm -rf bin/$(API_NAME) bin/$(WORKER_NAME)
 
 .PHONY: migrate_up
 migrate_up: ## Run all pending migrations

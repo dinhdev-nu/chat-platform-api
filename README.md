@@ -258,6 +258,14 @@ Main outbound events: `typing` · `presence` · `message.new` · `message.read` 
 
 ## ⚙️ Worker
 
+Redis Stream workers run as a standalone process from `cmd/worker/main.go`. The API process should enqueue jobs and return quickly; it does not start workers inline.
+
+```bash
+make run-worker
+```
+
+Or directly:
+
 ```bash
 APP_ENV=local go run ./cmd/worker/main.go
 ```
@@ -265,8 +273,12 @@ APP_ENV=local go run ./cmd/worker/main.go
 | Job type | Stream | Consumer group |
 |---|---|---|
 | `email.send_otp` | `stream:email` | `email-workers` |
+| `conversation.last_activity.update` | `stream:conversation` | `conversation-workers` |
+| `conversation.system_message.create` | `stream:conversation` | `conversation-workers` |
+| `auth.token_last_used.update` | `stream:auth` | `auth-workers` |
+| `user.last_seen.update` | `stream:user` | `user-workers` |
 
-> **Note:** `AuthService.SendOTP` currently uses the direct SMTP fallback. The Redis Stream enqueue path is implemented in `auth_service.go` but commented out.
+`AuthService.SendOTP` enqueues `email.send_otp`; only the worker process initializes SMTP and sends email.
 
 ---
 
@@ -283,11 +295,13 @@ APP_ENV=local go run ./cmd/worker/main.go
 ```bash
 make help           # List all make targets
 make run            # Run the API server
+make run-worker     # Run background worker
 make build          # Compile binary
 make tidy           # go mod tidy
 make lint           # golangci-lint
 go test ./...       # Run tests
 ```
+
 
 > The Makefile uses POSIX shell syntax. On Windows, use **Git Bash** or **WSL**.
 

@@ -56,6 +56,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 	// Goroutine recover pending messages khi worker start
 	go w.reclaimer(ctx)
+	go w.promoter(ctx)
 
 	for {
 		select {

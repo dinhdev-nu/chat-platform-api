@@ -99,8 +99,8 @@ WHERE conversation_id = ?;
 -- name: UpdateConversationLastActivity :exec
 -- Gọi bởi Kafka worker async sau khi gửi tin nhắn.
 UPDATE conversations
-SET last_message_id = ?, last_message_text = ?, last_activity_at = NOW(3), updated_at = NOW(3)
-WHERE id = ?;
+SET last_message_id = ?, last_message_text = ?, last_activity_at = ?, updated_at = NOW(3)
+WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at <= ?);
 
 -- name: GetUserConversationIDs :many
 -- Dùng khi WS connect: load toàn bộ conv user đang tham gia.

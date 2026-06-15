@@ -7,6 +7,7 @@ import (
 	"time"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
+	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/gin-gonic/gin"
@@ -35,7 +36,6 @@ type Handler struct {
 	rm  *RoomManager
 	mr  messageReadMarker
 	rr  r.RoomRepository
-	ur  r.UserRepository
 	log *zap.Logger
 }
 
@@ -43,13 +43,12 @@ type messageReadMarker interface {
 	MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error
 }
 
-func NewHandler(hub *Hub, rm *RoomManager, mr messageReadMarker, rr r.RoomRepository, ur r.UserRepository, log *zap.Logger) *Handler {
+func NewHandler(hub *Hub, rm *RoomManager, mr messageReadMarker, rr r.RoomRepository, log *zap.Logger) *Handler {
 	return &Handler{
 		hub: hub,
 		rm:  rm,
 		mr:  mr,
 		rr:  rr,
-		ur:  ur,
 		log: log,
 	}
 }
@@ -97,16 +96,31 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	go client.writePump()
 	client.readPump()
 
-	go func(parent context.Context, userID []byte) {
-		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
-		defer cancel()
-		if err := h.ur.UpdateLastSeenAt(bgCtx, userID); err != nil {
-			h.log.Warn("failed to update user last seen",
-				zap.String("user_id", hex.EncodeToString(userID)),
-				zap.Error(err),
-			)
-		}
-	}(ctx, user.ID)
+	go h.enqueueUserLastSeen(user.ID, time.Now())
+}
+
+func (h *Handler) enqueueUserLastSeen(userID []byte, seenAt time.Time) {
+	userIDCopy := append([]byte(nil), userID...)
+	payload := queue.UserLastSeenPayload{
+		UserID: userIDCopy,
+		SeenAt: seenAt,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if g.Stream == nil {
+		h.log.Warn("ws last_seen: stream unavailable, dropping best-effort job",
+			zap.String("user_id", hex.EncodeToString(userIDCopy)),
+		)
+		return
+	}
+	if err := g.Stream.EnqueueJob(ctx, queue.JobUpdateUserLastSeen, payload); err != nil {
+		h.log.Warn("ws last_seen: enqueue failed, dropping best-effort job",
+			zap.String("user_id", hex.EncodeToString(userIDCopy)),
+			zap.Error(err),
+		)
+	}
 }
 
 func getCurrentUser(c *gin.Context) (*model.User, bool) {
