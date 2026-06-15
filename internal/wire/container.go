@@ -18,16 +18,17 @@ type Container struct {
 	WebSocketHandler *websocket.Handler
 
 	AuthService *service.AuthService
+	Hub         *websocket.Hub
 }
 
-func NewContainer() *Container {
+func NewContainer(ctx context.Context) *Container {
 
 	// infrastructure
 	jwt := provider.NewJWTManager()
 	roomManager := websocket.NewRoomManager()
 	roomViewer := roomManager
-	hub := websocket.NewHub(g.RedisClient, roomManager, g.Logger)
-	go hub.Run(context.Background())
+	hub := websocket.NewHub(ctx, g.RedisClient, roomManager, g.Logger)
+	go hub.Run()
 
 	// repositories
 	userRepo := provider.NewUserRepository()
@@ -56,5 +57,6 @@ func NewContainer() *Container {
 		WebSocketHandler: wsHandler,
 
 		AuthService: authService,
+		Hub:         hub,
 	}
 }

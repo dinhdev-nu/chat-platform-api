@@ -122,9 +122,7 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 	}
 
 	// Warm member cache
-	go func() {
-		_ = cache.WarmMember(context.Background(), convID, [][]byte{currentUID, targetUserID})
-	}()
+	go warmMemberCache(ctx, convID, [][]byte{currentUID, targetUserID})
 
 	conv, err := s.roomRepo.GetConversationByID(ctx, convID)
 	if err != nil {
@@ -134,8 +132,8 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 	memberIDs := [][]byte{currentUID, targetUserID}
 	currentItem := conversationListItemForUser(ctx, conv, currentUID, model.RoleMember, false, targetUser, memberIDs)
 	targetItem := conversationListItemForUser(ctx, conv, targetUserID, model.RoleMember, false, currentUser, memberIDs)
-	s.publishConvSubscribe(currentUID, convID, conversationCreatedPayload(currentItem))
-	s.publishConvSubscribe(targetUserID, convID, conversationCreatedPayload(targetItem))
+	s.publishConvSubscribe(ctx, currentUID, convID, conversationCreatedPayload(currentItem))
+	s.publishConvSubscribe(ctx, targetUserID, convID, conversationCreatedPayload(targetItem))
 
 	return conv, false, nil
 }
@@ -223,11 +221,9 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 	}
 
 	// Warm member cache
-	go func() {
-		_ = cache.WarmMember(context.Background(), convID, allMemberIDs)
-	}()
+	go warmMemberCache(ctx, convID, allMemberIDs)
 
-	s.enqueueSystemMessage(convID, currentUID, "Group created")
+	s.enqueueSystemMessage(ctx, convID, currentUID, "Group created")
 
 	// // Push notification
 	// convHex := hex.EncodeToString(convID)
@@ -248,7 +244,7 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 			role = model.RoleAdmin
 		}
 		item := conversationListItemForUser(ctx, conv, memberID, role, false, nil, allMemberIDs)
-		s.publishConvSubscribe(memberID, convID, conversationCreatedPayload(item))
+		s.publishConvSubscribe(ctx, memberID, convID, conversationCreatedPayload(item))
 	}
 
 	return conv, nil
@@ -299,9 +295,16 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 		} else {
 			unread, _ := s.msgRepo.GetUnreadCountByWatermark(ctx, uid, c.ID)
 			c.UnreadCount = unread
-			go func(cid []byte, uid []byte, count int64) {
-				_ = cache.SetUnread(context.Background(), uid, cid, count)
-			}(c.ID, uid, unread)
+			go func(parent context.Context, cid []byte, uid []byte, count int64) {
+				cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)
+				defer cancel()
+				if err := cache.SetUnread(cacheCtx, uid, cid, count); err != nil {
+					g.Logger.Warn("roomService.ListConversations: failed to warm unread cache",
+						zap.String("conv_id", hex.EncodeToString(cid)),
+						zap.Error(err),
+					)
+				}
+			}(ctx, c.ID, uid, unread)
 		}
 		convs[i] = c
 	}
@@ -362,9 +365,17 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		return ae.Internal(err)
 	}
 	if err := cache.AddMember(ctx, convUID, targetUID); err != nil {
-		_ = cache.InvalidateMembers(context.Background(), convUID)
+		invalidateCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
+		invalidateErr := cache.InvalidateMembers(invalidateCtx, convUID)
+		cancel()
+		if invalidateErr != nil {
+			g.Logger.Warn("roomService.AddMember: failed to invalidate member cache",
+				zap.String("conv_id", hex.EncodeToString(convUID)),
+				zap.Error(invalidateErr),
+			)
+		}
 	}
-	s.enqueueSystemMessage(convUID, actorUID, fmt.Sprintf("%s added %s", actorName, targetUser.Username))
+	s.enqueueSystemMessage(ctx, convUID, actorUID, fmt.Sprintf("%s added %s", actorName, targetUser.Username))
 	// Push notification
 	convHex := hex.EncodeToString(convUID)
 	actor := userSummaryFromParts(actorUID, actorName, nil)
@@ -385,7 +396,7 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		item := conversationListItemForUser(ctx, conv, targetUID, model.RoleMember, false, nil, memberIDs)
 		targetPayload = memberPayload(redis.EventMemberAdded, convUID, targetUID, member, actor, &item)
 	}
-	s.publishConvSubscribe(targetUID, convUID, targetPayload)
+	s.publishConvSubscribe(ctx, targetUID, convUID, targetPayload)
 	return nil
 }
 
@@ -424,19 +435,35 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		return ae.Internal(err)
 	}
 
-	go func() {
-		bg := context.Background()
-		if err := cache.RemoveMember(bg, convID, targetUID); err != nil {
-			_ = cache.InvalidateMembers(bg, convID)
+	go func(parent context.Context) {
+		cacheCtx, cancel := detachedContext(parent, sideEffectTimeout)
+		defer cancel()
+
+		if err := cache.RemoveMember(cacheCtx, convID, targetUID); err != nil {
+			g.Logger.Warn("roomService.RemoveMember: failed to remove member from cache",
+				zap.String("conv_id", hex.EncodeToString(convID)),
+				zap.Error(err),
+			)
+			if invalidateErr := cache.InvalidateMembers(cacheCtx, convID); invalidateErr != nil {
+				g.Logger.Warn("roomService.RemoveMember: failed to invalidate member cache",
+					zap.String("conv_id", hex.EncodeToString(convID)),
+					zap.Error(invalidateErr),
+				)
+			}
 		}
-		_ = cache.DeleteUnread(bg, targetUID, convID)
-	}()
+		if err := cache.DeleteUnread(cacheCtx, targetUID, convID); err != nil {
+			g.Logger.Warn("roomService.RemoveMember: failed to delete unread cache",
+				zap.String("conv_id", hex.EncodeToString(convID)),
+				zap.Error(err),
+			)
+		}
+	}(ctx)
 
 	action := "left"
 	if !isSelf {
 		action = "removed"
 	}
-	s.enqueueSystemMessage(convID, actorUID, fmt.Sprintf("%s %s", targetName, action))
+	s.enqueueSystemMessage(ctx, convID, actorUID, fmt.Sprintf("%s %s", targetName, action))
 
 	// Push notification
 	convHex := hex.EncodeToString(convID)
@@ -456,12 +483,12 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		ConvID:  convHex,
 		Payload: payload,
 	})
-	s.publishConvUnsubscribe(targetUID, convID, payload)
+	s.publishConvUnsubscribe(ctx, targetUID, convID, payload)
 
 	return nil
 }
 
-func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (int64, error) {
+func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (uint64, error) {
 	convHex := strings.ToLower(hex.EncodeToString(convID))
 	seqKey := fmt.Sprintf("seq:%s", convHex)
 	lookKey := fmt.Sprintf("look:seq_init:%s", convHex)
@@ -502,11 +529,15 @@ func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convI
 		}
 	}
 
-	val, err := g.RedisClient.Incr(ctx, seqKey).Result()
+	cmd := g.RedisClient.Incr(ctx, seqKey)
+	val, err := cmd.Result()
 	if err != nil {
 		return 0, err
 	}
-	return val, nil
+	if val < 0 {
+		return 0, fmt.Errorf("invalid negative message sequence: %d", val)
+	}
+	return cmd.Uint64()
 }
 
 func decodeCursor(cursor string) (time.Time, []byte, error) {
@@ -534,8 +565,8 @@ func encodeCursor(t time.Time, id []byte) string {
 	return base64.StdEncoding.EncodeToString([]byte(payload))
 }
 
-func (s *RoomService) enqueueSystemMessage(convID, senderID []byte, content string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *RoomService) enqueueSystemMessage(parent context.Context, convID, senderID []byte, content string) {
+	ctx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 
 	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
@@ -561,7 +592,7 @@ func (s *RoomService) enqueueSystemMessage(convID, senderID []byte, content stri
 		MessageID:      msgID,
 		SenderID:       senderID,
 		Content:        content,
-		Seq:            uint64(seqVal),
+		Seq:            seqVal,
 		ActivityAt:     time.Now(),
 	}
 	if g.Stream == nil {
@@ -612,36 +643,42 @@ func (s *RoomService) insertSystemMessageFallback(payload queue.ConversationSyst
 	}
 }
 
-func (s *RoomService) publishConvSubscribe(userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(userID, conversationSysEvent{
+func (s *RoomService) publishConvSubscribe(ctx context.Context, userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(ctx, userID, conversationSysEvent{
 		Type:    sysConvSubscribe,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: payload,
 	})
 }
 
-func (s *RoomService) publishConvUnsubscribe(userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(userID, conversationSysEvent{
+func (s *RoomService) publishConvUnsubscribe(ctx context.Context, userID, convID []byte, payload json.RawMessage) {
+	s.publishConversationSysEvent(ctx, userID, conversationSysEvent{
 		Type:    sysConvUnsubscribe,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: payload,
 	})
 }
 
-func (s *RoomService) publishConversationSysEvent(userID []byte, evt conversationSysEvent) {
+func (s *RoomService) publishConversationSysEvent(ctx context.Context, userID []byte, evt conversationSysEvent) {
 	if g.RedisClient == nil {
 		return
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
+		g.Logger.Warn("roomService.publishConversationSysEvent: failed to marshal event", zap.Error(err))
 		return
 	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	go func(parent context.Context) {
+		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
 		defer cancel()
-		_ = g.RedisClient.Publish(ctx, "sys:"+hex.EncodeToString(userID), payload).Err()
-	}()
+		if err := g.RedisClient.Publish(publishCtx, "sys:"+hex.EncodeToString(userID), payload).Err(); err != nil {
+			g.Logger.Warn("roomService.publishConversationSysEvent: failed to publish event",
+				zap.String("user_id", hex.EncodeToString(userID)),
+				zap.Error(err),
+			)
+		}
+	}(ctx)
 }
 
 func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID []byte, convs []*model.ConversationListRow) {
@@ -661,9 +698,7 @@ func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID
 				continue
 			}
 			if len(members) > 0 {
-				go func(convID []byte, memberIDs [][]byte) {
-					_ = cache.WarmMember(context.Background(), convID, memberIDs)
-				}(conv.ID, members)
+				go warmMemberCache(ctx, conv.ID, members)
 			}
 		}
 
@@ -700,5 +735,17 @@ func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID
 		}
 		conv.MemberOnlineCount = onlineCount
 		conv.IsOnline = onlineCount > 0
+	}
+}
+
+func warmMemberCache(parent context.Context, convID []byte, memberIDs [][]byte) {
+	cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)
+	defer cancel()
+
+	if err := cache.WarmMember(cacheCtx, convID, memberIDs); err != nil {
+		g.Logger.Warn("roomService: failed to warm member cache",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.Error(err),
+		)
 	}
 }

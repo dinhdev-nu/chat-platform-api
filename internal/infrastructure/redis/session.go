@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,7 +39,7 @@ func (s *SessionStore) Get(ctx context.Context, jti []byte) (string, error) {
 	val, err := s.client.Get(ctx, key).Result()
 
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return "", nil // Session không tồn tại
 		}
 	}
@@ -59,7 +60,7 @@ func (s *SessionStore) GetUser(ctx context.Context, userID []byte) (string, erro
 	key := fmt.Sprintf(cacheUser, hex.EncodeToString(userID))
 	val, err := s.client.Get(ctx, key).Result()
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return "", nil // Cache miss
 		}
 		return "", err

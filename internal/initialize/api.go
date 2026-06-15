@@ -12,12 +12,15 @@ import (
 
 	c "github.com/dinhdev-nu/chat-platform-api/config"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
+	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/gin-gonic/gin"
 )
 
 type APIApplication struct {
 	Config *c.Config
 	Router *gin.Engine
+	hub    *websocket.Hub
+	cancel context.CancelFunc
 }
 
 func NewAPIApp() *APIApplication {
@@ -27,20 +30,38 @@ func NewAPIApp() *APIApplication {
 	InitLogger()
 	InitMySQL()
 	InitRedis()
-	r := InitRouter()
+	appCtx, cancel := context.WithCancel(context.Background())
+	r, container := InitRouter(appCtx)
 
 	return &APIApplication{
 		Config: cfg,
 		Router: r,
+		hub:    container.Hub,
+		cancel: cancel,
 	}
 }
 
 func (app *APIApplication) Run() {
 	addr := fmt.Sprintf("%s:%d", app.Config.Server.Host, app.Config.Server.Port)
+	readTimeout := time.Duration(app.Config.Server.ReadTimeout) * time.Second
+	if readTimeout <= 0 {
+		readTimeout = 30 * time.Second
+	}
+	writeTimeout := time.Duration(app.Config.Server.WriteTimeout) * time.Second
+	if writeTimeout <= 0 {
+		writeTimeout = 30 * time.Second
+	}
+	shutdownTimeout := time.Duration(app.Config.Server.ShutdownTimeout) * time.Second
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 10 * time.Second
+	}
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: app.Router,
+		Addr:              addr,
+		Handler:           app.Router,
+		ReadHeaderTimeout: readTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 	}
 
 	go func() {
@@ -56,11 +77,16 @@ func (app *APIApplication) Run() {
 
 	fmt.Println("\nShutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
+
+	app.cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		fmt.Printf("Server forced to shutdown: %v\n", err)
+	}
+	if err := app.hub.Wait(ctx); err != nil {
+		fmt.Printf("WebSocket Hub forced to shutdown: %v\n", err)
 	}
 
 	app.closeConnections()

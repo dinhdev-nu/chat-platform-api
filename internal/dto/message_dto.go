@@ -20,10 +20,10 @@ type AttachmentRequest struct {
 	FileURL       string `json:"file_url"        binding:"required,max=512"`
 	FileName      string `json:"file_name"       binding:"required,max=255"`
 	MimeType      string `json:"mime_type"       binding:"required,max=100"`
-	FileSizeBytes int64  `json:"file_size_bytes" binding:"required,min=1"`
-	Width         *int   `json:"width,omitempty"`
-	Height        *int   `json:"height,omitempty"`
-	DurationSec   *int   `json:"duration_sec,omitempty"`
+	FileSizeBytes uint64 `json:"file_size_bytes" binding:"required,min=1"`
+	Width         *int   `json:"width,omitempty" binding:"omitempty,min=1,max=16777215"`
+	Height        *int   `json:"height,omitempty" binding:"omitempty,min=1,max=16777215"`
+	DurationSec   *int   `json:"duration_sec,omitempty" binding:"omitempty,min=1,max=32767"`
 }
 
 type MarkAsReadRequest struct {
@@ -37,7 +37,7 @@ type AttachmentResponse struct {
 	FileName      string `json:"file_name"`
 	FileURL       string `json:"file_url"`
 	MimeType      string `json:"mime_type"`
-	FileSizeBytes int64  `json:"file_size_bytes"`
+	FileSizeBytes uint64 `json:"file_size_bytes"`
 	Width         *int   `json:"width,omitempty"`
 	Height        *int   `json:"height,omitempty"`
 	DurationSec   *int   `json:"duration_sec,omitempty"`

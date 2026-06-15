@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
+	"go.uber.org/zap"
 )
 
 type UserService struct {
@@ -41,13 +43,19 @@ func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *mod
 		return nil, ae.Internal(err)
 	}
 
-	go func() {
+	go func(parent context.Context) {
+		cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)
+		defer cancel()
+
 		payload, err := json.Marshal(updated)
 		if err != nil {
+			g.Logger.Warn("userService.UpdateUser: failed to marshal user cache payload", zap.Error(err))
 			return
 		}
-		g.Session.WarmUser(context.Background(), userID, string(payload))
-	}()
+		if err := g.Session.WarmUser(cacheCtx, userID, string(payload)); err != nil {
+			g.Logger.Warn("failed to warm updated user cache", zap.Error(err))
+		}
+	}(ctx)
 
 	return updated, nil
 }
@@ -87,7 +95,7 @@ func (s *UserService) Search(ctx context.Context, uid []byte, q string, cursor *
 }
 
 func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetUID []byte) (model.ContactRequestResult, error) {
-	if string(senderUID) == string(targetUID) {
+	if bytes.Equal(senderUID, targetUID) {
 		return model.ContactRequestResult(""), ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
 	}
 
@@ -106,15 +114,15 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 
 	for _, p := range pairs {
 		switch {
-		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
+		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusBlocked:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
-		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
+		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusBlocked:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
 		case p.Status == model.ContactStatusAccepted:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "already friends")
-		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusPending:
+		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusPending:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "request already sent")
-		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusPending:
+		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusPending:
 			// Đối phương đã gửi request → auto-accept.
 			_, err := s.userRepo.UpdateContactStatus(ctx, p.ID, model.ContactStatusAccepted)
 			if err != nil {
@@ -133,7 +141,7 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 }
 
 func (s *UserService) AcceptContactRequest(ctx context.Context, currentUID, senderUID []byte) error {
-	if string(currentUID) == string(senderUID) {
+	if bytes.Equal(currentUID, senderUID) {
 		return ae.New(ae.ErrInvalidInput, "cannot accept request from yourself")
 	}
 	contact, err := s.userRepo.GetContactRecord(ctx, senderUID, currentUID)
@@ -276,15 +284,23 @@ func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []b
 	})
 }
 
-func (s *UserService) publishContactSysEvent(_ context.Context, userID []byte, evt contactSysEvent) {
+func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte, evt contactSysEvent) {
 	if g.RedisClient == nil {
 		return
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
+		g.Logger.Warn("userService.publishContactSysEvent: failed to marshal event", zap.Error(err))
 		return
 	}
-	go func() {
-		_ = g.RedisClient.Publish(context.Background(), "sys:"+hex.EncodeToString(userID), payload).Err()
-	}()
+	go func(parent context.Context) {
+		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
+		defer cancel()
+		if err := g.RedisClient.Publish(publishCtx, "sys:"+hex.EncodeToString(userID), payload).Err(); err != nil {
+			g.Logger.Warn("userService.publishContactSysEvent: failed to publish event",
+				zap.String("user_id", hex.EncodeToString(userID)),
+				zap.Error(err),
+			)
+		}
+	}(ctx)
 }

@@ -1,17 +1,17 @@
 package initialize
 
 import (
+	"context"
 	"net/http"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
-	"github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/dinhdev-nu/chat-platform-api/internal/router"
 	"github.com/dinhdev-nu/chat-platform-api/internal/wire"
 	"github.com/gin-gonic/gin"
 )
 
-func InitRouter() *gin.Engine {
+func InitRouter(ctx context.Context) (*gin.Engine, *wire.Container) {
 	var r *gin.Engine
 
 	switch g.Config.Server.Mode {
@@ -36,10 +36,10 @@ func InitRouter() *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	container := wire.NewContainer()
+	container := wire.NewContainer(ctx)
 	v1 := r.Group("/api/v1")
 
-	am := middleware.AuthMiddleware(container.AuthService)
+	am := m.AuthMiddleware(container.AuthService)
 	v1Protected := v1.Group("")
 	v1Protected.Use(am)
 	{
@@ -50,5 +50,5 @@ func InitRouter() *gin.Engine {
 		v1Protected.GET("/ws", container.WebSocketHandler.ServeWS)
 	}
 
-	return r
+	return r, container
 }

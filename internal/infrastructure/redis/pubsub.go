@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -61,19 +62,6 @@ func (b *PubSubBroker) Publish(ctx context.Context, convID []byte, event Event) 
 	return b.client.Publish(ctx, channel, data).Err()
 }
 
-func (b *PubSubBroker) Subscribe(ctx context.Context, convID []byte) (<-chan *redis.Message, func(), error) {
-	channel := fmt.Sprintf(notifyChannel, hex.EncodeToString(convID))
-	pubsub := b.client.Subscribe(ctx, channel)
-
-	// Đảm bảo kênh đã được subscribe trước khi trả về
-	_, err := pubsub.Receive(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return pubsub.Channel(), func() { pubsub.Close() }, nil
-}
-
 func (b *PubSubBroker) SetTyping(ctx context.Context, convID, userID []byte) error {
 	key := fmt.Sprintf(
 		typingKey,
@@ -126,7 +114,7 @@ func (b *PubSubBroker) GetUnread(ctx context.Context, userID, convID []byte) (in
 	)
 	val, err := b.client.Get(ctx, key).Int64()
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return 0, nil // Không có key nào, tức là chưa có tin nhắn nào chưa đọc
 		}
 	}

@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -67,7 +68,7 @@ func (r *messageRepo) UpdateMessageContent(ctx context.Context, arg *model.Messa
 func (r *messageRepo) GetMessageByID(ctx context.Context, id []byte) (*model.Message, error) {
 	row, err := r.q.GetMessageByID(ctx, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("messageRepo.GetMessageByID: %w", err)
@@ -93,7 +94,7 @@ func (r *messageRepo) GetMessageCursorTS(ctx context.Context, msgID, convID []by
 		ConversationID: convID,
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("messageRepo.GetMessageCursorTS: %w", err)
@@ -156,17 +157,11 @@ func (r *messageRepo) ListMessages(ctx context.Context, convID []byte, cursorTS 
 }
 
 func (r *messageRepo) InsertAttachment(ctx context.Context, att *model.Attachment) error {
-	err := r.q.InsertAttachment(ctx, sqlc.InsertAttachmentParams{
-		ID:            att.ID,
-		MessageID:     att.MessageID,
-		FileName:      att.Filename,
-		FileUrl:       att.FileURL,
-		MimeType:      att.MimeType,
-		FileSizeBytes: uint64(att.FileSizeBytes),
-		Width:         intPtrToNullInt32(att.Width),
-		Height:        intPtrToNullInt32(att.Height),
-		DurationSec:   intPtrToNullInt16(att.DurationSec),
-	})
+	params, err := attachmentParams(att)
+	if err != nil {
+		return fmt.Errorf("messageRepo.InsertAttachment: %w", err)
+	}
+	err = r.q.InsertAttachment(ctx, params)
 	if err != nil {
 		return fmt.Errorf("messageRepo.InsertAttachment: %w", err)
 	}
@@ -176,17 +171,11 @@ func (r *messageRepo) InsertAttachment(ctx context.Context, att *model.Attachmen
 func (r *messageRepo) BatchInsertAttachments(ctx context.Context, args []*model.Attachment) error {
 	sqlArgs := make([]sqlc.InsertAttachmentParams, len(args))
 	for i, att := range args {
-		sqlArgs[i] = sqlc.InsertAttachmentParams{
-			ID:            att.ID,
-			MessageID:     att.MessageID,
-			FileName:      att.Filename,
-			FileUrl:       att.FileURL,
-			MimeType:      att.MimeType,
-			FileSizeBytes: uint64(att.FileSizeBytes),
-			Width:         intPtrToNullInt32(att.Width),
-			Height:        intPtrToNullInt32(att.Height),
-			DurationSec:   intPtrToNullInt16(att.DurationSec),
+		params, err := attachmentParams(att)
+		if err != nil {
+			return fmt.Errorf("messageRepo.BatchInsertAttachments: attachment %d: %w", i, err)
 		}
+		sqlArgs[i] = params
 	}
 	return r.q.BatchInsertAttachments(ctx, sqlArgs)
 }
@@ -238,16 +227,53 @@ func stringPtrToNullString(s *string) sql.NullString {
 	return sql.NullString{String: *s, Valid: true}
 }
 
-func intPtrToNullInt32(i *int) sql.NullInt32 {
-	if i == nil || *i == 0 {
-		return sql.NullInt32{Valid: false}
+func attachmentParams(att *model.Attachment) (sqlc.InsertAttachmentParams, error) {
+	width, err := mediumIntParam("width", att.Width)
+	if err != nil {
+		return sqlc.InsertAttachmentParams{}, err
 	}
-	return sql.NullInt32{Int32: int32(*i), Valid: true}
+	height, err := mediumIntParam("height", att.Height)
+	if err != nil {
+		return sqlc.InsertAttachmentParams{}, err
+	}
+	duration, err := smallIntParam("duration_sec", att.DurationSec)
+	if err != nil {
+		return sqlc.InsertAttachmentParams{}, err
+	}
+
+	return sqlc.InsertAttachmentParams{
+		ID:            att.ID,
+		MessageID:     att.MessageID,
+		FileName:      att.Filename,
+		FileUrl:       att.FileURL,
+		MimeType:      att.MimeType,
+		FileSizeBytes: att.FileSizeBytes,
+		Width:         width,
+		Height:        height,
+		DurationSec:   duration,
+	}, nil
 }
 
-func intPtrToNullInt16(i *int) sql.NullInt16 {
-	if i == nil || *i == 0 {
-		return sql.NullInt16{Valid: false}
+func mediumIntParam(name string, value *int) (sql.NullInt32, error) {
+	const maxMediumIntUnsigned = 1<<24 - 1
+
+	if value == nil || *value == 0 {
+		return sql.NullInt32{}, nil
 	}
-	return sql.NullInt16{Int16: int16(*i), Valid: true}
+	if *value < 0 || *value > maxMediumIntUnsigned {
+		return sql.NullInt32{}, fmt.Errorf("%s must be between 1 and %d", name, maxMediumIntUnsigned)
+	}
+	return sql.NullInt32{Int32: int32(*value), Valid: true}, nil
+}
+
+func smallIntParam(name string, value *int) (sql.NullInt16, error) {
+	const maxSmallInt = 1<<15 - 1
+
+	if value == nil || *value == 0 {
+		return sql.NullInt16{}, nil
+	}
+	if *value < 0 || *value > maxSmallInt {
+		return sql.NullInt16{}, fmt.Errorf("%s must be between 1 and %d", name, maxSmallInt)
+	}
+	return sql.NullInt16{Int16: int16(*value), Valid: true}, nil
 }

@@ -65,7 +65,7 @@ func (r GetConversationByIDRow) ToDomain() *model.Conversation {
 
 func (m ConversationMember) ToDomain() *model.ConversationMember {
 	return &model.ConversationMember{
-		ID:             int64(m.ID),
+		ID:             m.ID,
 		ConversationID: m.ConversationID,
 		UserID:         m.UserID,
 		Role:           model.MemberRole(m.Role),
@@ -108,7 +108,7 @@ func (a Attachment) ToDomain() *model.Attachment {
 		Filename:      a.FileName,
 		FileURL:       a.FileUrl,
 		MimeType:      a.MimeType,
-		FileSizeBytes: int64(a.FileSizeBytes),
+		FileSizeBytes: a.FileSizeBytes,
 		CreatedAt:     a.CreatedAt,
 	}
 	if a.Width.Valid {

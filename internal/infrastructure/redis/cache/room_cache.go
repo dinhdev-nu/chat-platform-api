@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"time"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
@@ -150,8 +151,10 @@ func GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[strin
 	for i, v := range vals {
 		if v != nil {
 			if s, ok := v.(string); ok {
-				var n int64
-				fmt.Sscanf(s, "%d", &n)
+				n, err := strconv.ParseInt(s, 10, 64)
+				if err != nil {
+					return nil, fmt.Errorf("parse unread count for conversation %s: %w", cidHexes[i], err)
+				}
 				result[cidHexes[i]] = n
 			}
 		}
