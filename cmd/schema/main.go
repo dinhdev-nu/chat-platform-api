@@ -9,20 +9,31 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 
 	db, sqlDB, err := mysqlgorm.NewDB(cfg.MySQL, cfg.Server.IsProduction())
 	if err != nil {
-		log.Fatalf("connect to MySQL: %v", err)
+		return fmt.Errorf("connect to MySQL: %w", err)
 	}
-	defer sqlDB.Close()
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			log.Printf("close MySQL connection: %v", err)
+		}
+	}()
 
 	if err := mysqlgorm.RunMigrations(db); err != nil {
-		log.Fatalf("run GORM migrations: %v", err)
+		return fmt.Errorf("run GORM migrations: %w", err)
 	}
 
 	fmt.Println("GORM migrations applied successfully")
+	return nil
 }

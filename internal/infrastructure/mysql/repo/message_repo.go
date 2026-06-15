@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -67,7 +68,7 @@ func (r *messageRepo) UpdateMessageContent(ctx context.Context, arg *model.Messa
 func (r *messageRepo) GetMessageByID(ctx context.Context, id []byte) (*model.Message, error) {
 	row, err := r.q.GetMessageByID(ctx, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("messageRepo.GetMessageByID: %w", err)
@@ -93,7 +94,7 @@ func (r *messageRepo) GetMessageCursorTS(ctx context.Context, msgID, convID []by
 		ConversationID: convID,
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("messageRepo.GetMessageCursorTS: %w", err)

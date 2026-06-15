@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,7 +55,7 @@ func (p *PresenceStore) BulkIsOnline(ctx context.Context, userIDs [][]byte) (map
 		cmds[hexID] = pipe.Exists(ctx, key)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return nil, err
 	}
 

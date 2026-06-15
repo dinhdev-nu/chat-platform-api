@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -126,7 +127,7 @@ func (b *PubSubBroker) GetUnread(ctx context.Context, userID, convID []byte) (in
 	)
 	val, err := b.client.Get(ctx, key).Int64()
 	if err != nil {
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			return 0, nil // Không có key nào, tức là chưa có tin nhắn nào chưa đọc
 		}
 	}

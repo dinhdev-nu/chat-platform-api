@@ -9,6 +9,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
+	"go.uber.org/zap"
 )
 
 type UserService struct {
@@ -46,7 +47,9 @@ func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *mod
 		if err != nil {
 			return
 		}
-		g.Session.WarmUser(context.Background(), userID, string(payload))
+		if err := g.Session.WarmUser(context.Background(), userID, string(payload)); err != nil {
+			g.Logger.Warn("failed to warm updated user cache", zap.Error(err))
+		}
 	}()
 
 	return updated, nil

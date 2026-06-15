@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dinhdev-nu/chat-platform-api/global"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue/handler"
@@ -43,17 +42,17 @@ func main() {
 	emailGroup := queue.GroupByStream[emailStream]
 	emailConsumer := fmt.Sprintf("worker-%s-%s-%d", emailStream, hostname, pid)
 
-	if err := global.Stream.EnsureConsumerGroup(ctx, emailStream, emailGroup); err != nil {
-		global.Logger.Fatal("setup email consumer group failed", zap.Error(err))
+	if err := g.Stream.EnsureConsumerGroup(ctx, emailStream, emailGroup); err != nil {
+		g.Logger.Fatal("setup email consumer group failed", zap.Error(err))
 	}
 
-	emailWorker := worker.New(emailStream, emailGroup, emailConsumer, global.Stream, global.Logger)
+	emailWorker := worker.New(emailStream, emailGroup, emailConsumer, g.Stream, g.Logger)
 	emailWorker.Register(emailHandler)
 	supervisor.Add(emailWorker)
 
 	// ... Stream : có thể thêm nhiều stream và worker khác nếu cần
 
-	global.Logger.Info("starting standalone worker supervisor",
+	g.Logger.Info("starting standalone worker supervisor",
 		zap.String("hostname", hostname),
 	)
 	go supervisor.Run(ctx)
@@ -62,6 +61,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	global.Logger.Info("worker shutting down...")
+	g.Logger.Info("worker shutting down...")
 	cancel()
 }

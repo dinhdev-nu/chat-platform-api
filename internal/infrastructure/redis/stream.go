@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -81,7 +82,7 @@ func (s *StreamStore) ReadJobs(ctx context.Context, opts ConsumerOptions) ([]Str
 		Count:    opts.Count,
 		Block:    opts.Block,
 	}).Result()
-	if err == goredis.Nil {
+	if errors.Is(err, goredis.Nil) {
 		return nil, nil // Không có message nào
 	}
 	if err != nil {
@@ -168,7 +169,7 @@ func (s *StreamStore) PromoteDelayedJobs(ctx context.Context, stream string) (in
 		[]string{delayedKey, stream},
 		nowMs, maxLen,
 	).Int64()
-	if err != nil && err != goredis.Nil {
+	if err != nil && !errors.Is(err, goredis.Nil) {
 		return 0, fmt.Errorf("promote delayed jobs [%s] : %w", stream, err)
 	}
 	return n, nil

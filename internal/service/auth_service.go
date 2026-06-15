@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dinhdev-nu/chat-platform-api/global"
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
@@ -234,7 +233,7 @@ func (s *AuthService) Logout(ctx context.Context, jti []byte) error {
 		return ar.Internal(err)
 	}
 	if err := s.tokenRepo.DeleteByJTI(ctx, jti); err != nil {
-		global.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
+		g.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
 	}
 
 	return nil
@@ -359,7 +358,7 @@ func (s *AuthService) sendDirectFallback(email string, payload queue.SendOTPEmai
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		global.Logger.Error("failed to marshal payload for direct email fallback",
+		g.Logger.Error("failed to marshal payload for direct email fallback",
 			zap.String("email", email),
 			zap.Error(err),
 		)
@@ -374,7 +373,7 @@ func (s *AuthService) sendDirectFallback(email string, payload queue.SendOTPEmai
 	}
 
 	if err := s.emailHandler.Handle(ctx, job); err != nil {
-		global.Logger.Error("direct email fallback failed",
+		g.Logger.Error("direct email fallback failed",
 			zap.String("email", email),
 			zap.Error(err),
 		)

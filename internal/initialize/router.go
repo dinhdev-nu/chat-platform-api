@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
-	"github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/dinhdev-nu/chat-platform-api/internal/router"
 	"github.com/dinhdev-nu/chat-platform-api/internal/wire"
@@ -39,7 +38,7 @@ func InitRouter() *gin.Engine {
 	container := wire.NewContainer()
 	v1 := r.Group("/api/v1")
 
-	am := middleware.AuthMiddleware(container.AuthService)
+	am := m.AuthMiddleware(container.AuthService)
 	v1Protected := v1.Group("")
 	v1Protected.Use(am)
 	{
