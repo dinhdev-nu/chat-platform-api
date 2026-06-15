@@ -242,7 +242,7 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 			ConversationID: convID,
 			SenderID:       currentUID,
 			Content:        &content,
-			Seq:            uint64(seqVal),
+			Seq:            seqVal,
 		}
 		if err := s.msgRepo.InsertSystemMessage(bg, arg); err != nil {
 			return
@@ -464,7 +464,7 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 			ConversationID: convUID,
 			SenderID:       actorUID,
 			Content:        &content,
-			Seq:            uint64(seqVal),
+			Seq:            seqVal,
 		}
 		_ = s.msgRepo.InsertSystemMessage(bg, arg)
 		_ = s.roomRepo.UpdateConversationLastActivity(bg, convUID, arg.ID, arg.Content)
@@ -557,7 +557,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 			ConversationID: convID,
 			SenderID:       actorUID,
 			Content:        &content,
-			Seq:            uint64(seqVal),
+			Seq:            seqVal,
 		}
 		_ = s.msgRepo.InsertSystemMessage(bg, arg)
 		_ = s.roomRepo.UpdateConversationLastActivity(bg, convID, arg.ID, arg.Content)
@@ -618,7 +618,7 @@ func (s *RoomService) publishConversationSysEvent(userID []byte, evt conversatio
 	}()
 }
 
-func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (int64, error) {
+func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convID []byte) (uint64, error) {
 	convHex := strings.ToLower(hex.EncodeToString(convID))
 	seqKey := fmt.Sprintf("seq:%s", convHex)
 	lookKey := fmt.Sprintf("look:seq_init:%s", convHex)
@@ -659,11 +659,15 @@ func GetNextSeqFromRedis(ctx context.Context, msgRepo r.MessageRepository, convI
 		}
 	}
 
-	val, err := g.RedisClient.Incr(ctx, seqKey).Result()
+	cmd := g.RedisClient.Incr(ctx, seqKey)
+	val, err := cmd.Result()
 	if err != nil {
 		return 0, err
 	}
-	return val, nil
+	if val < 0 {
+		return 0, fmt.Errorf("invalid negative message sequence: %d", val)
+	}
+	return cmd.Uint64()
 }
 
 func decodeCursor(cursor string) (time.Time, []byte, error) {

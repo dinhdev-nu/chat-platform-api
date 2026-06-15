@@ -64,7 +64,7 @@ func (s *MessageService) SendMessage(
 		ParentID:       parentID,
 		Type:           model.MessageType(msgType),
 		Content:        &content,
-		Seq:            uint64(seqVal),
+		Seq:            seqVal,
 	}
 	if err := s.msgRepo.InsertMessage(ctx, arg); err != nil {
 		return nil, ae.Internal(err)
@@ -116,7 +116,7 @@ func (s *MessageService) SendMessageWithAttachment(
 		ParentID:       parentID,
 		Type:           model.MessageType(msgType),
 		Content:        &content,
-		Seq:            uint64(seqVal),
+		Seq:            seqVal,
 	}
 
 	if err := s.msgRepo.InsertMessage(ctx, arg); err != nil {

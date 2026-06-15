@@ -46,7 +46,7 @@ type Attachment struct {
 	Filename      string
 	FileURL       string
 	MimeType      string
-	FileSizeBytes int64
+	FileSizeBytes uint64
 	Width         *int
 	Height        *int
 	DurationSec   *int

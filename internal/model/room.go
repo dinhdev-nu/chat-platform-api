@@ -30,7 +30,7 @@ type Conversation struct {
 }
 
 type ConversationMember struct {
-	ID             int64
+	ID             uint64
 	ConversationID []byte
 	UserID         []byte
 	Role           MemberRole
