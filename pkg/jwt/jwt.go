@@ -73,13 +73,13 @@ func (m *JWTManager) ParseToken(tokenStr string) (*Claims, error) {
 		tokenStr, &Claims{},
 		func(token *gojwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*gojwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return []byte(m.cfg.Secret), nil
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("Jwt parse %w:", err)
+		return nil, fmt.Errorf("jwt parse: %w", err)
 	}
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {

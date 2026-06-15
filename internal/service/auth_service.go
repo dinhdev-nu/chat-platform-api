@@ -115,42 +115,8 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 }
 
 func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, ip string) (*dto.LoginResponse, error) {
-	locked, err := g.OTPStore.IsLocked(ctx, req.Email)
-	if err != nil {
-		return nil, ar.Internal(err)
-	}
-	if locked {
-		return nil, ar.New(
-			ar.ErrTooManyRequests,
-			"Account temporarily locked due to too many failed attempts. Try again in 15 minutes",
-		)
-	}
-
-	stored, err := g.OTPStore.Get(ctx, req.Email)
-	if err != nil {
-		return nil, ar.Internal(err)
-	}
-	if stored == "" {
-		return nil, ar.New(ar.ErrInvalidRequest, "OTP expired or not found")
-	}
-
-	if stored != req.OTP {
-		attempts, err := g.OTPStore.IncrAttempts(ctx, req.Email)
-		if err != nil {
-			return nil, ar.Internal(err)
-		}
-		if attempts >= 5 {
-			if err := g.OTPStore.Lock(ctx, req.Email); err != nil {
-				return nil, ar.Internal(err)
-			}
-		}
-
-		return nil, ar.New(ar.ErrInvalidCredentials,
-			fmt.Sprintf("Invalid OTP. You have %d attempts left", 5-attempts))
-	}
-
-	if err := g.OTPStore.Delete(ctx, req.Email); err != nil {
-		return nil, ar.Internal(err)
+	if err := verifyOTPCode(ctx, req.Email, req.OTP); err != nil {
+		return nil, err
 	}
 
 	user, err := s.findByEmailOrCreateUser(ctx, req.Email)
@@ -161,6 +127,56 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		return nil, ar.New(ar.ErrForbidden, "User account has been suspended")
 	}
 
+	return s.createLoginSession(ctx, user, req, ip)
+}
+
+func verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
+	locked, err := g.OTPStore.IsLocked(ctx, email)
+	if err != nil {
+		return ar.Internal(err)
+	}
+	if locked {
+		return ar.New(
+			ar.ErrTooManyRequests,
+			"Account temporarily locked due to too many failed attempts. Try again in 15 minutes",
+		)
+	}
+
+	stored, err := g.OTPStore.Get(ctx, email)
+	if err != nil {
+		return ar.Internal(err)
+	}
+	if stored == "" {
+		return ar.New(ar.ErrInvalidRequest, "OTP expired or not found")
+	}
+
+	if stored != submittedOTP {
+		attempts, err := g.OTPStore.IncrAttempts(ctx, email)
+		if err != nil {
+			return ar.Internal(err)
+		}
+		if attempts >= 5 {
+			if err := g.OTPStore.Lock(ctx, email); err != nil {
+				return ar.Internal(err)
+			}
+		}
+
+		return ar.New(ar.ErrInvalidCredentials,
+			fmt.Sprintf("Invalid OTP. You have %d attempts left", 5-attempts))
+	}
+
+	if err := g.OTPStore.Delete(ctx, email); err != nil {
+		return ar.Internal(err)
+	}
+	return nil
+}
+
+func (s *AuthService) createLoginSession(
+	ctx context.Context,
+	user *model.User,
+	req dto.VerifyOTPRequest,
+	ip string,
+) (*dto.LoginResponse, error) {
 	deviceID, err := crypto.ParseUUIDToBytes(req.DeviceID)
 	if err != nil {
 		return nil, ar.New(ar.ErrInvalidRequest, "Invalid device id")
@@ -202,23 +218,8 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		return nil, ar.Internal(err)
 	}
 
-	count, err := s.tokenRepo.CountByUserID(ctx, user.ID)
-	if err != nil {
+	if err := s.enforceDeviceLimit(ctx, user.ID); err != nil {
 		return nil, ar.Internal(err)
-	}
-	if count > maxDevicesPerUser {
-		jtisToEvict, err := s.tokenRepo.GetOldestJTIByUserIDBeyondLimit(ctx, user.ID, maxDevicesPerUser)
-		if err != nil {
-			return nil, ar.Internal(err)
-		}
-		if len(jtisToEvict) > 0 {
-			if err := s.revokeSessions(jtisToEvict); err != nil {
-				return nil, ar.Internal(err)
-			}
-		}
-		if err := s.tokenRepo.DeleteOldestBeyondLimit(ctx, user.ID, maxDevicesPerUser); err != nil {
-			g.Logger.Warn("Failed to evict old devices", zap.Error(err))
-		}
 	}
 
 	expireDuration := time.Duration(g.Config.Jwt.ExpireTime) * time.Second
@@ -231,6 +232,30 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 		ExpiresAt:   token.ExpiresAT,
 		User:        user.ToUserResponse(),
 	}, nil
+}
+
+func (s *AuthService) enforceDeviceLimit(ctx context.Context, userID []byte) error {
+	count, err := s.tokenRepo.CountByUserID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if count <= maxDevicesPerUser {
+		return nil
+	}
+
+	jtisToEvict, err := s.tokenRepo.GetOldestJTIByUserIDBeyondLimit(ctx, userID, maxDevicesPerUser)
+	if err != nil {
+		return err
+	}
+	if len(jtisToEvict) > 0 {
+		if err := s.revokeSessions(jtisToEvict); err != nil {
+			return err
+		}
+	}
+	if err := s.tokenRepo.DeleteOldestBeyondLimit(ctx, userID, maxDevicesPerUser); err != nil {
+		g.Logger.Warn("Failed to evict old devices", zap.Error(err))
+	}
+	return nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, jti []byte) error {

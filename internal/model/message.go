@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"bytes"
+	"time"
+)
 
 type MessageType int8
 
@@ -34,10 +37,10 @@ func (m Message) IsText() bool  { return m.Type == MessageTypeText }
 func (m Message) IsImage() bool { return m.Type == MessageTypeImage }
 func (m Message) IsFile() bool  { return m.Type == MessageTypeFile }
 func (m Message) CanEdit(userID []byte) bool {
-	return !m.IsDeleted && m.SenderID != nil && string(m.SenderID) == string(userID)
+	return !m.IsDeleted && m.SenderID != nil && bytes.Equal(m.SenderID, userID)
 }
 func (m Message) CanDelete(userID []byte) bool {
-	return !m.IsDeleted && m.SenderID != nil && string(m.SenderID) == string(userID)
+	return !m.IsDeleted && m.SenderID != nil && bytes.Equal(m.SenderID, userID)
 }
 
 type Attachment struct {

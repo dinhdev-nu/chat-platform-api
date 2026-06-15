@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -94,7 +95,7 @@ func (s *UserService) Search(ctx context.Context, uid []byte, q string, cursor *
 }
 
 func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetUID []byte) (model.ContactRequestResult, error) {
-	if string(senderUID) == string(targetUID) {
+	if bytes.Equal(senderUID, targetUID) {
 		return model.ContactRequestResult(""), ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
 	}
 
@@ -113,15 +114,15 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 
 	for _, p := range pairs {
 		switch {
-		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
+		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusBlocked:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
-		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusBlocked:
+		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusBlocked:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
 		case p.Status == model.ContactStatusAccepted:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "already friends")
-		case string(p.UserID) == string(senderUID) && p.Status == model.ContactStatusPending:
+		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusPending:
 			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "request already sent")
-		case string(p.ContactID) == string(senderUID) && p.Status == model.ContactStatusPending:
+		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusPending:
 			// Đối phương đã gửi request → auto-accept.
 			_, err := s.userRepo.UpdateContactStatus(ctx, p.ID, model.ContactStatusAccepted)
 			if err != nil {
@@ -140,7 +141,7 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 }
 
 func (s *UserService) AcceptContactRequest(ctx context.Context, currentUID, senderUID []byte) error {
-	if string(currentUID) == string(senderUID) {
+	if bytes.Equal(currentUID, senderUID) {
 		return ae.New(ae.ErrInvalidInput, "cannot accept request from yourself")
 	}
 	contact, err := s.userRepo.GetContactRecord(ctx, senderUID, currentUID)
