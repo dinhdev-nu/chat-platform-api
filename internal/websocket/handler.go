@@ -78,20 +78,39 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		return
 	}
 	// SET presence via centralized PresenceStore
+	presenceCtx, cancelPresence := context.WithTimeout(ctx, redisOperationTimeout)
+
 	if g.Presence != nil {
-		_ = g.Presence.SetOnline(context.Background(), user.ID)
+		if err := g.Presence.SetOnline(presenceCtx, user.ID); err != nil {
+			h.log.Warn("failed to set user online",
+				zap.String("user_id", hex.EncodeToString(user.ID)),
+				zap.Error(err),
+			)
+		}
 	} else {
 		// fallback to previous behaviour if Presence store not initialized
 		uidHex := hex.EncodeToString(user.ID)
-		_ = h.hub.rdb.Set(
-			context.Background(),
+		if err := h.hub.rdb.Set(
+			presenceCtx,
 			presenceKey(uidHex), 1,
 			3*pingPeriod,
-		).Err()
+		).Err(); err != nil {
+			h.log.Warn("failed to set fallback user online",
+				zap.String("user_id", uidHex),
+				zap.Error(err),
+			)
+		}
 	}
 	// Tạo client mới và đăng ký vào hub
+	cancelPresence()
+
 	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
-	h.hub.Register(client, convIDs)
+	if !h.hub.Register(client, convIDs) {
+		if err := conn.Close(); err != nil {
+			h.log.Debug("failed to close WebSocket during shutdown", zap.Error(err))
+		}
+		return
+	}
 
 	go client.writePump()
 	client.readPump()

@@ -606,7 +606,7 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	}
 }
 
-func (s *MessageService) enqueueConversationLastActivity(ctx context.Context, convID, msgID []byte, text *string, activityAt time.Time) {
+func (s *MessageService) enqueueConversationLastActivity(parent context.Context, convID, msgID []byte, text *string, activityAt time.Time) {
 	payload := queue.ConversationLastActivityPayload{
 		ConversationID: convID,
 		MessageID:      msgID,
@@ -618,21 +618,30 @@ func (s *MessageService) enqueueConversationLastActivity(ctx context.Context, co
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 		)
-		s.updateConversationLastActivityFallback(convID, msgID, text, activityAt)
+		s.updateConversationLastActivityFallback(parent, convID, msgID, text, activityAt)
 		return
 	}
-	if err := g.Stream.EnqueueJob(ctx, queue.JobUpdateConversationLastActivity, payload); err != nil {
+
+	enqueueCtx, cancel := detachedContext(parent, streamEnqueueTimeout)
+	err := g.Stream.EnqueueJob(enqueueCtx, queue.JobUpdateConversationLastActivity, payload)
+	cancel()
+	if err != nil {
 		g.Logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(err),
 		)
-		s.updateConversationLastActivityFallback(convID, msgID, text, activityAt)
+		s.updateConversationLastActivityFallback(parent, convID, msgID, text, activityAt)
 	}
 }
 
-func (s *MessageService) updateConversationLastActivityFallback(convID, msgID []byte, text *string, activityAt time.Time) {
-	fallbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *MessageService) updateConversationLastActivityFallback(
+	parent context.Context,
+	convID, msgID []byte,
+	text *string,
+	activityAt time.Time,
+) {
+	fallbackCtx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 	if fallbackErr := s.roomRepo.UpdateConversationLastActivity(fallbackCtx, convID, msgID, text, activityAt); fallbackErr != nil {
 		g.Logger.Error("messageService: sync fallback update last activity failed",

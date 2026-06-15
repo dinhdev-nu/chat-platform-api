@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/redis/go-redis/v9"
@@ -14,6 +14,11 @@ import (
 )
 
 type Hub struct {
+	ctx  context.Context
+	done chan struct{}
+
+	stopping atomic.Bool
+
 	clientsMu sync.RWMutex
 	// uidHex -> connID -> *Client
 	clients map[string]map[string]*Client
@@ -28,49 +33,90 @@ type Hub struct {
 	log    *zap.Logger
 }
 
-func NewHub(rdb *redis.Client, rm *RoomManager, log *zap.Logger) *Hub {
+func NewHub(ctx context.Context, rdb *redis.Client, rm *RoomManager, log *zap.Logger) *Hub {
 	return &Hub{
+		ctx:      ctx,
+		done:     make(chan struct{}),
 		clients:  make(map[string]map[string]*Client),
 		channels: make(map[string]map[string]struct{}),
 		rdb:      rdb,
-		pubsub:   rdb.Subscribe(context.Background()), // emty subscription
+		pubsub:   rdb.Subscribe(ctx), // empty subscription
 		rm:       rm,
 		log:      log,
 	}
 }
 
-func (h *Hub) Run(ctx context.Context) {
+func (h *Hub) Run() {
+	defer close(h.done)
+
 	redisCh := h.pubsub.Channel(redis.WithChannelSize(1000)) // buffer to prevent blocking
 
-	go func() {
-		for {
-			select {
-			case msg, ok := <-redisCh:
-				if !ok {
-					return
-				}
-				if strings.HasPrefix(msg.Channel, "sys:") {
-					// internal system Hub - Hub sử dụng channel này để nhận sự kiện subscribe/unsubscribe từ client
-					h.handleSysEvent(msg.Channel, []byte(msg.Payload))
-				} else {
-					// event Hub - Hub sử dụng channel này để nhận sự kiện từ Redis và dispatch đến client
-					h.dispatchAndIntercept(msg.Channel, []byte(msg.Payload))
-				}
-			case <-ctx.Done():
-				_ = h.pubsub.Close()
+	for {
+		select {
+		case msg, ok := <-redisCh:
+			if !ok {
+				h.shutdown()
 				return
 			}
+			if strings.HasPrefix(msg.Channel, "sys:") {
+				// internal system Hub - Hub sử dụng channel này để nhận sự kiện subscribe/unsubscribe từ client
+				h.handleSysEvent(msg.Channel, []byte(msg.Payload))
+			} else {
+				// event Hub - Hub sử dụng channel này để nhận sự kiện từ Redis và dispatch đến client
+				h.dispatchAndIntercept(msg.Channel, []byte(msg.Payload))
+			}
+		case <-h.ctx.Done():
+			h.shutdown()
+			return
 		}
-	}()
+	}
 }
 
-// Register thêm client vào Hub khi WS connect.
-// Subscribe Redis channels cho tất cả conv + sys:{uid} của user.
-func (h *Hub) Register(client *Client, convIDs [][]byte) {
+func (h *Hub) Wait(ctx context.Context) error {
+	select {
+	case <-h.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *Hub) shutdown() {
+	h.stopping.Store(true)
+
+	h.clientsMu.RLock()
+	clients := make([]*Client, 0)
+	for _, sessions := range h.clients {
+		for _, client := range sessions {
+			clients = append(clients, client)
+		}
+	}
+	h.clientsMu.RUnlock()
+
+	for _, client := range clients {
+		if err := client.conn.Close(); err != nil {
+			h.log.Debug("failed to close WebSocket during shutdown",
+				zap.String("uid", client.uidHex),
+				zap.Error(err),
+			)
+		}
+	}
+
+	if err := h.pubsub.Close(); err != nil {
+		h.log.Warn("failed to close Redis pubsub", zap.Error(err))
+	}
+}
+
+// Register adds a WebSocket client and subscribes its Redis channels.
+func (h *Hub) Register(client *Client, convIDs [][]byte) bool {
 	newChannels := make([]string, 0, len(client.convs)+1)
 	firstSession := false
-	//client mapp
+	// client map
 	h.clientsMu.Lock()
+	if h.stopping.Load() || h.ctx.Err() != nil {
+		h.clientsMu.Unlock()
+		return false
+	}
 	if _, ok := h.clients[client.uidHex]; !ok {
 		h.clients[client.uidHex] = make(map[string]*Client)
 		firstSession = true
@@ -98,13 +144,17 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) {
 	h.channelsMu.Unlock()
 	// Subscribe Redis channels nếu có channel mới
 	if len(newChannels) > 0 {
-		if err := h.pubsub.Subscribe(context.Background(), newChannels...); err != nil {
+		ctx, cancel := h.redisContext()
+		err := h.pubsub.Subscribe(ctx, newChannels...)
+		cancel()
+		if err != nil {
 			h.log.Warn("pubsub subscribe failed", zap.Strings("channels", newChannels), zap.Error(err))
 		}
 	}
 	if firstSession {
 		h.broadcastPresence(client.uidHex, client.snapshotConvs(), true)
 	}
+	return true
 }
 
 // Unregister xóa client khỏi Hub khi WS disconnect.
@@ -132,7 +182,7 @@ func (h *Hub) Unregister(client *Client) {
 
 	// If user went offline (no sessions), remove uid from channels map
 	emptyChannels := make([]string, 0)
-	if !stillOnline {
+	if !stillOnline && !h.stopping.Load() && h.ctx.Err() == nil {
 		h.channelsMu.Lock()
 		for ch, uids := range h.channels {
 			delete(uids, client.uidHex)
@@ -152,18 +202,35 @@ func (h *Hub) Unregister(client *Client) {
 	// Clear viewing state for this specific user (if offline)
 	if !stillOnline {
 		h.rm.ClearAll(client.uid)
+	}
+	if !stillOnline && !h.stopping.Load() {
+		ctx, cancel := h.redisContext()
 		// cleanup presence via centralized PresenceStore
 		if g.Presence != nil {
-			_ = g.Presence.SetOffline(context.Background(), client.uid)
+			if err := g.Presence.SetOffline(ctx, client.uid); err != nil {
+				h.log.Warn("failed to clear user presence",
+					zap.String("uid", client.uidHex),
+					zap.Error(err),
+				)
+			}
 		} else {
-			_ = h.rdb.Del(context.Background(), presenceKey(client.uidHex)).Err()
+			if err := h.rdb.Del(ctx, presenceKey(client.uidHex)).Err(); err != nil {
+				h.log.Warn("failed to clear fallback user presence",
+					zap.String("uid", client.uidHex),
+					zap.Error(err),
+				)
+			}
 		}
+		cancel()
 		h.broadcastPresence(client.uidHex, convIDs, false)
 	}
 
 	// Unsubscribe Redis channels that are now empty
-	if len(emptyChannels) > 0 {
-		if err := h.pubsub.Unsubscribe(context.Background(), emptyChannels...); err != nil {
+	if len(emptyChannels) > 0 && !h.stopping.Load() && h.ctx.Err() == nil {
+		ctx, cancel := h.redisContext()
+		err := h.pubsub.Unsubscribe(ctx, emptyChannels...)
+		cancel()
+		if err != nil {
 			h.log.Warn("pubsub unsubscribe failed", zap.Strings("channels", emptyChannels), zap.Error(err))
 		}
 	}
@@ -297,7 +364,7 @@ func (h *Hub) interceptMembership(payload []byte) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := h.redisContext()
 		defer cancel()
 		if err := h.rdb.Publish(ctx, sysChannel(evt.UserID), cmd).Err(); err != nil {
 			h.log.Warn("sys publish failed", zap.String("channel", sysChannel(evt.UserID)), zap.String("conv_id", evt.ConvID), zap.Error(err))
@@ -501,11 +568,20 @@ func (h *Hub) isOnline(uidHex string) bool {
 	if err != nil {
 		return false
 	}
+	ctx, cancel := h.redisContext()
+	defer cancel()
+
 	if g.Presence != nil {
-		online, err := g.Presence.IsOnline(context.Background(), uid)
+		online, err := g.Presence.IsOnline(ctx, uid)
+		if err != nil {
+			h.log.Warn("failed to read user presence", zap.String("uid", uidHex), zap.Error(err))
+		}
 		return err == nil && online
 	}
-	exists, err := h.rdb.Exists(context.Background(), presenceKey(uidHex)).Result()
+	exists, err := h.rdb.Exists(ctx, presenceKey(uidHex)).Result()
+	if err != nil {
+		h.log.Warn("failed to read fallback user presence", zap.String("uid", uidHex), zap.Error(err))
+	}
 	return err == nil && exists > 0
 }
 
@@ -554,7 +630,10 @@ func (h *Hub) subscribeLocalClient(client *Client, convID []byte) {
 
 	// Subscribe redis channel nếu chưa có ai subscribe
 	if needSubscribe {
-		if err := h.pubsub.Subscribe(context.Background(), ch); err != nil {
+		ctx, cancel := h.redisContext()
+		err := h.pubsub.Subscribe(ctx, ch)
+		cancel()
+		if err != nil {
 			h.log.Warn("failed to subscribe to redis channel", zap.String("channel", ch), zap.Error(err))
 		}
 	}
@@ -578,7 +657,10 @@ func (h *Hub) unsubscribeLocalClient(client *Client, convID []byte) {
 	h.channelsMu.Unlock()
 
 	if channelEmpty {
-		if err := h.pubsub.Unsubscribe(context.Background(), ch); err != nil {
+		ctx, cancel := h.redisContext()
+		err := h.pubsub.Unsubscribe(ctx, ch)
+		cancel()
+		if err != nil {
 			h.log.Warn("failed to unsubscribe from redis channel", zap.String("channel", ch), zap.Error(err))
 		}
 	}

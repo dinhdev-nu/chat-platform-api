@@ -161,7 +161,9 @@ func normalizeHexID(raw string) (string, []byte, bool) {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.Unregister(c)
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			c.log.Debug("failed to close WebSocket reader", zap.String("uid", c.uidHex), zap.Error(err))
+		}
 	}()
 
 	c.conn.SetReadLimit(maxMessageSize)
@@ -169,9 +171,19 @@ func (c *Client) readPump() {
 	c.conn.SetPongHandler(func(string) error {           // Reset deadline và refresh presence mỗi khi nhận được pong
 		// Refresh presence TTL so presence is tied to protocol-level pong
 		if g.Presence != nil {
-			_ = g.Presence.Heartbeat(context.Background(), c.uid)
+			ctx, cancel := c.hub.redisContext()
+			err := g.Presence.Heartbeat(ctx, c.uid)
+			cancel()
+			if err != nil {
+				c.log.Warn("ws presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
+			}
 		} else {
-			_ = c.rdb.Expire(context.Background(), presenceKey(c.uidHex), 3*pingPeriod).Err()
+			ctx, cancel := c.hub.redisContext()
+			err := c.rdb.Expire(ctx, presenceKey(c.uidHex), 3*pingPeriod).Err()
+			cancel()
+			if err != nil {
+				c.log.Warn("ws fallback presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
+			}
 		}
 		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
@@ -205,6 +217,8 @@ func (c *Client) writePump() {
 
 	for {
 		select {
+		case <-c.hub.ctx.Done():
+			return
 		case msg, ok := <-c.send:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
@@ -268,7 +282,8 @@ func (c *Client) onTyping(payload json.RawMessage) {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, cancel := c.hub.redisContext()
+	defer cancel()
 	if err := c.rdb.Set(ctx, typingKey(convHex, c.uidHex), 1, typingTTL).Err(); err != nil {
 		c.log.Warn("ws typing ttl set failed",
 			zap.String("uid", c.uidHex),
@@ -357,7 +372,7 @@ func (c *Client) onRead(payload json.RawMessage) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.hub.ctx, 5*time.Second)
 	defer cancel()
 	if err := c.mr.MarkAsRead(ctx, convID, c.uid, lastReadMsgID); err != nil {
 		c.log.Warn("ws mark as read failed",

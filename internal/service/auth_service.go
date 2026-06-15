@@ -83,22 +83,27 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		IPAddress:    "", // Có thể thêm IP từ context nếu cần
 		ExpiresInMin: 5,
 	}
-	if g.Stream == nil {
-		if cleanupErr := g.OTPStore.ClearSendState(ctx, req.Email); cleanupErr != nil {
-			g.Logger.Warn("failed to cleanup OTP after unavailable stream",
+	clearSendState := func(reason string) {
+		cleanupCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
+		defer cancel()
+
+		if cleanupErr := g.OTPStore.ClearSendState(cleanupCtx, req.Email); cleanupErr != nil {
+			g.Logger.Warn("failed to cleanup OTP send state",
 				zap.String("email", req.Email),
+				zap.String("reason", reason),
 				zap.Error(cleanupErr),
 			)
 		}
+	}
+	if g.Stream == nil {
+		clearSendState("stream unavailable")
 		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: stream store unavailable"))
 	}
-	if err := g.Stream.EnqueueJob(ctx, queue.JobSendOTPEmail, payload); err != nil {
-		if cleanupErr := g.OTPStore.ClearSendState(ctx, req.Email); cleanupErr != nil {
-			g.Logger.Warn("failed to cleanup OTP after enqueue failure",
-				zap.String("email", req.Email),
-				zap.Error(cleanupErr),
-			)
-		}
+
+	enqueueCtx, cancel := detachedContext(ctx, streamEnqueueTimeout)
+	defer cancel()
+	if err := g.Stream.EnqueueJob(enqueueCtx, queue.JobSendOTPEmail, payload); err != nil {
+		clearSendState("enqueue failed")
 		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: %w", err))
 	}
 
