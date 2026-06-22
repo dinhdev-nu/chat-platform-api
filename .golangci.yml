@@ -22,6 +22,7 @@ linters:
     - misspell
     - prealloc
     - noctx
+    - depguard
 
   settings:
     gocyclo:
@@ -49,6 +50,27 @@ linters:
           disabled: true
         - name: package-comments
           disabled: true
+
+    depguard:
+      rules:
+        domain-model:
+          files:
+            - "internal/model/**"
+          deny:
+            - pkg: "github.com/dinhdev-nu/chat-platform-api/internal/dto"
+              desc: "domain model must not depend on transport DTOs"
+            - pkg: "github.com/dinhdev-nu/chat-platform-api/internal/infrastructure"
+              desc: "domain model must not depend on infrastructure"
+            - pkg: "gorm.io"
+              desc: "domain model must not depend on GORM"
+        application-service:
+          files:
+            - "internal/service/**"
+          deny:
+            - pkg: "github.com/dinhdev-nu/chat-platform-api/global"
+              desc: "services must receive dependencies via constructors"
+            - pkg: "github.com/dinhdev-nu/chat-platform-api/internal/infrastructure"
+              desc: "services must depend on service ports, not infrastructure adapters"
 
   exclusions:
     generated: lax

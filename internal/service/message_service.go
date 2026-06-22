@@ -11,10 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
@@ -33,14 +29,42 @@ type MessageService struct {
 	userRepo r.UserRepository
 
 	roomViewer RoomViewer
+
+	roomCache       RoomCache
+	userCache       UserCache
+	eventPublisher  EventPublisher
+	jobEnqueuer     JobEnqueuer
+	messageSequence MessageSequence
+	log             *zap.Logger
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, ur r.UserRepository, rv RoomViewer) *MessageService {
+type MessageServiceDeps struct {
+	RoomCache       RoomCache
+	UserCache       UserCache
+	EventPublisher  EventPublisher
+	JobEnqueuer     JobEnqueuer
+	MessageSequence MessageSequence
+	Logger          *zap.Logger
+}
+
+func NewMessageService(
+	rr r.RoomRepository,
+	mg r.MessageRepository,
+	ur r.UserRepository,
+	rv RoomViewer,
+	deps MessageServiceDeps,
+) *MessageService {
 	return &MessageService{
-		roomRepo:   rr,
-		msgRepo:    mg,
-		userRepo:   ur,
-		roomViewer: rv,
+		roomRepo:        rr,
+		msgRepo:         mg,
+		userRepo:        ur,
+		roomViewer:      rv,
+		roomCache:       deps.RoomCache,
+		userCache:       deps.UserCache,
+		eventPublisher:  deps.EventPublisher,
+		jobEnqueuer:     deps.JobEnqueuer,
+		messageSequence: deps.MessageSequence,
+		log:             serviceLogger(deps.Logger),
 	}
 }
 
@@ -52,7 +76,7 @@ func (s *MessageService) SendMessage(
 		return nil, err
 	}
 
-	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
+	seqVal, err := s.nextMessageSeq(ctx, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
@@ -103,7 +127,7 @@ func (s *MessageService) SendMessageWithAttachment(
 		return nil, ae.Internal(err)
 	}
 
-	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
+	seqVal, err := s.nextMessageSeq(ctx, convID)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
@@ -134,7 +158,7 @@ func (s *MessageService) SendMessageWithAttachment(
 		cleanupCtx, cancel := detachedContext(ctx, sideEffectTimeout)
 		defer cancel()
 		if cleanupErr := s.msgRepo.SoftDeleteMessage(cleanupCtx, mID); cleanupErr != nil {
-			g.Logger.Error("messageService.SendMessageWithAttachment: failed to roll back message",
+			s.log.Error("messageService.SendMessageWithAttachment: failed to roll back message",
 				zap.String("msg_id", hex.EncodeToString(mID)),
 				zap.Error(cleanupErr),
 			)
@@ -261,13 +285,13 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 		users = make(map[string]*model.User, len(senderIDs))
 		missingIDs := senderIDs
 
-		if g.Session != nil {
-			cachedUsers, misses, err := g.Session.GetUsersWithMisses(gCtx, senderIDs)
+		if s.userCache != nil {
+			cachedUsers, misses, err := s.userCache.GetUsersWithMisses(gCtx, senderIDs)
 			if err == nil {
 				users = cachedUsers
 				missingIDs = misses
 			} else {
-				g.Logger.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
+				s.log.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
 			}
 		}
 
@@ -283,12 +307,12 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 			users[k] = user
 		}
 
-		if g.Session != nil && len(dbUsers) > 0 {
+		if s.userCache != nil && len(dbUsers) > 0 {
 			go func(parent context.Context, users map[string]*model.User) {
 				warmCtx, cancel := detachedContext(parent, cacheTaskTimeout)
 				defer cancel()
-				if err := g.Session.WarmUsers(warmCtx, users); err != nil {
-					g.Logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
+				if err := s.userCache.WarmUsers(warmCtx, users); err != nil {
+					s.log.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
 				}
 			}(ctx, dbUsers)
 		}
@@ -351,19 +375,21 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 		return ae.Internal(err)
 	}
 	unread, err := s.msgRepo.GetUnreadCountByWatermark(ctx, userID, convID)
-	if err != nil {
-		_ = cache.DeleteUnread(ctx, userID, convID)
-	} else {
-		_ = cache.SetUnread(ctx, userID, convID, unread)
+	if s.roomCache != nil {
+		if err != nil {
+			_ = s.roomCache.DeleteUnread(ctx, userID, convID)
+		} else {
+			_ = s.roomCache.SetUnread(ctx, userID, convID, unread)
+		}
 	}
 
 	raw := messageReadPayload(convID, userID, lastReadMsgID, time.Now())
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload")
+		s.log.Error("messageService.MarkAsRead: failed to marshal pubsub payload")
 		return nil
 	}
-	_ = g.PubSub.Publish(ctx, convID, redis.Event{
-		Type:    redis.EventReadMessage,
+	_ = s.publishConversationEvent(ctx, convID, Event{
+		Type:    EventReadMessage,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: raw,
 	})
@@ -408,11 +434,11 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
 	raw := messageEditedPayload(msg, sender)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.EditMessage: failed to marshal pubsub payload")
+		s.log.Error("messageService.EditMessage: failed to marshal pubsub payload")
 		return msg, nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
-		Type:    redis.EventEditMessage,
+	_ = s.publishConversationEvent(ctx, msg.ConversationID, Event{
+		Type:    EventEditMessage,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
 	})
@@ -453,11 +479,11 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 
 	raw := messageDeletedPayload(msg.ConversationID, msgID, time.Now())
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload")
+		s.log.Error("messageService.DeleteMessage: failed to marshal pubsub payload")
 		return nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
-		Type:    redis.EventDelMessage,
+	_ = s.publishConversationEvent(ctx, msg.ConversationID, Event{
+		Type:    EventDelMessage,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
 	})
@@ -503,16 +529,30 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 
 	raw := reactionTogglePayload(msg.ConversationID, msgID, userID, emoji, action)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload")
+		s.log.Error("messageService.ToggleReaction: failed to marshal pubsub payload")
 		return action, nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
-		Type:    redis.EventToggleReaction,
+	_ = s.publishConversationEvent(ctx, msg.ConversationID, Event{
+		Type:    EventToggleReaction,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
 	})
 
 	return action, nil
+}
+
+func (s *MessageService) nextMessageSeq(ctx context.Context, convID []byte) (uint64, error) {
+	if s.messageSequence == nil {
+		return 0, fmt.Errorf("message sequence unavailable")
+	}
+	return s.messageSequence.Next(ctx, convID)
+}
+
+func (s *MessageService) publishConversationEvent(ctx context.Context, convID []byte, event Event) error {
+	if s.eventPublisher == nil {
+		return nil
+	}
+	return s.eventPublisher.PublishConversation(ctx, convID, event)
 }
 
 func decodeMsgCursor(cursor string) (time.Time, uint64, error) {
@@ -550,23 +590,23 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 
 	// Fan-out to members (pubsub)
 	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to load sender", zap.Error(err))
+		s.log.Warn("messageService.afterSend: failed to load sender", zap.Error(err))
 	} else if sender != nil {
 		msgWithMeta.SenderName = sender.Username
 		msgWithMeta.SenderAvatarURL = sender.AvatarURL
 	}
 	raw := messageNewPayload(msgWithMeta)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload",
+		s.log.Error("messageService.afterSend: failed to marshal pubsub payload",
 			zap.String("msg_id", hex.EncodeToString(msg.ID)))
 		return
 	}
-	if err := g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
-		Type:    redis.EventNewMessage,
+	if err := s.publishConversationEvent(ctx, msg.ConversationID, Event{
+		Type:    EventNewMessage,
 		ConvID:  convHex,
 		Payload: raw,
 	}); err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to publish message",
+		s.log.Warn("messageService.afterSend: failed to publish message",
 			zap.String("msg_id", hex.EncodeToString(msg.ID)),
 			zap.Error(err),
 		)
@@ -576,7 +616,7 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
 	allOffMembers := make([][]byte, 0)
 	if err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
+		s.log.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
 	} else {
 		for _, mID := range members {
 			if hex.EncodeToString(mID) == senderHex {
@@ -588,33 +628,33 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 			allOffMembers = append(allOffMembers, mID)
 		}
 	}
-	if len(allOffMembers) > 0 {
-		if err := cache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
-			g.Logger.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
+	if s.roomCache != nil && len(allOffMembers) > 0 {
+		if err := s.roomCache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
+			s.log.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
 		} else if cacheHit {
-			if err := cache.RefreshTTL(ctx, msg.ConversationID); err != nil {
-				g.Logger.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
+			if err := s.roomCache.RefreshTTL(ctx, msg.ConversationID); err != nil {
+				s.log.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
 			}
 		}
 	}
 
 	// The whole afterSend workflow is already asynchronous.
-	if err == nil && !cacheHit && len(members) > 0 {
-		if err := cache.WarmMember(ctx, msg.ConversationID, members); err != nil {
-			g.Logger.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
+	if s.roomCache != nil && err == nil && !cacheHit && len(members) > 0 {
+		if err := s.roomCache.WarmMember(ctx, msg.ConversationID, members); err != nil {
+			s.log.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
 		}
 	}
 }
 
 func (s *MessageService) enqueueConversationLastActivity(parent context.Context, convID, msgID []byte, text *string, activityAt time.Time) {
-	payload := queue.ConversationLastActivityPayload{
+	payload := ConversationLastActivityJob{
 		ConversationID: convID,
 		MessageID:      msgID,
 		MessageText:    text,
 		ActivityAt:     activityAt,
 	}
-	if g.Stream == nil {
-		g.Logger.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
+	if s.jobEnqueuer == nil {
+		s.log.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 		)
@@ -623,10 +663,10 @@ func (s *MessageService) enqueueConversationLastActivity(parent context.Context,
 	}
 
 	enqueueCtx, cancel := detachedContext(parent, streamEnqueueTimeout)
-	err := g.Stream.EnqueueJob(enqueueCtx, queue.JobUpdateConversationLastActivity, payload)
+	err := s.jobEnqueuer.EnqueueConversationLastActivity(enqueueCtx, payload)
 	cancel()
 	if err != nil {
-		g.Logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
+		s.log.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(err),
@@ -644,7 +684,7 @@ func (s *MessageService) updateConversationLastActivityFallback(
 	fallbackCtx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 	if fallbackErr := s.roomRepo.UpdateConversationLastActivity(fallbackCtx, convID, msgID, text, activityAt); fallbackErr != nil {
-		g.Logger.Error("messageService: sync fallback update last activity failed",
+		s.log.Error("messageService: sync fallback update last activity failed",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(fallbackErr),
@@ -653,15 +693,17 @@ func (s *MessageService) updateConversationLastActivityFallback(
 }
 
 func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
-	members, err := cache.GetMembers(ctx, convID)
-	if err == nil && len(members) > 0 {
-		return members, true, nil
-	}
-	if err != nil {
-		g.Logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
+	if s.roomCache != nil {
+		members, err := s.roomCache.GetMembers(ctx, convID)
+		if err == nil && len(members) > 0 {
+			return members, true, nil
+		}
+		if err != nil {
+			s.log.Warn("member cache unavailable, falling back to DB", zap.Error(err))
+		}
 	}
 
-	members, err = s.roomRepo.GetConversationMemberIDs(ctx, convID)
+	members, err := s.roomRepo.GetConversationMemberIDs(ctx, convID)
 	if err != nil {
 		return nil, false, ae.Internal(err)
 	}
@@ -669,13 +711,15 @@ func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([
 }
 
 func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
-	isMember, hit, err := cache.IsMember(ctx, convID, senderUID)
-	if err == nil && hit {
-		if isMember {
-			return nil
+	if s.roomCache != nil {
+		isMember, hit, err := s.roomCache.IsMember(ctx, convID, senderUID)
+		if err == nil && hit {
+			if isMember {
+				return nil
+			}
+			// Negative cache can be stale immediately after a member is added.
+			// Verify against DB before denying access.
 		}
-		// Negative cache can be stale immediately after a member is added.
-		// Verify against DB before denying access.
 	}
 
 	// Fallback db

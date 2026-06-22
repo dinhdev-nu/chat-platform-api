@@ -2,9 +2,13 @@ package wire
 
 import (
 	"context"
+	"time"
 
 	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/handler"
+	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
+	iredis "github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
+	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/internal/websocket"
 	"github.com/dinhdev-nu/chat-platform-api/internal/wire/provider"
@@ -36,11 +40,45 @@ func NewContainer(ctx context.Context) *Container {
 	roomRepo := provider.NewRoomRepository()
 	messageRepo := provider.NewMessageRepository()
 
+	// application adapters
+	roomCache := cache.NewRoomCache(g.RedisClient)
+	jobEnqueuer := queue.NewStreamJobEnqueuer(g.Stream)
+	eventPublisher := iredis.NewEventPublisher(g.RedisClient, g.PubSub)
+	messageSequence := iredis.NewMessageSequence(g.RedisClient, messageRepo)
+	tokenLastUsedThrottle := iredis.NewTokenLastUsedThrottle(g.RedisClient)
+
 	// services
-	authService := provider.NewAuthService(userRepo, userTokenRepo, jwt)
-	userService := provider.NewUserService(userRepo)
-	roomService := provider.NewRoomService(userRepo, roomRepo, messageRepo)
-	messageService := provider.NewMessageService(roomRepo, messageRepo, userRepo, roomViewer)
+	authService := provider.NewAuthService(userRepo, userTokenRepo, jwt, service.AuthServiceDeps{
+		OTPStore:              g.OTPStore,
+		Session:               g.Session,
+		UserCache:             g.Session,
+		JobEnqueuer:           jobEnqueuer,
+		TokenLastUsedThrottle: tokenLastUsedThrottle,
+		TokenTTL:              time.Duration(g.Config.Jwt.ExpireTime) * time.Second,
+		Logger:                g.Logger,
+	})
+	userService := provider.NewUserService(userRepo, service.UserServiceDeps{
+		UserCache:      g.Session,
+		Presence:       g.Presence,
+		EventPublisher: eventPublisher,
+		Logger:         g.Logger,
+	})
+	roomService := provider.NewRoomService(userRepo, roomRepo, messageRepo, service.RoomServiceDeps{
+		RoomCache:       roomCache,
+		Presence:        g.Presence,
+		EventPublisher:  eventPublisher,
+		JobEnqueuer:     jobEnqueuer,
+		MessageSequence: messageSequence,
+		Logger:          g.Logger,
+	})
+	messageService := provider.NewMessageService(roomRepo, messageRepo, userRepo, roomViewer, service.MessageServiceDeps{
+		RoomCache:       roomCache,
+		UserCache:       g.Session,
+		EventPublisher:  eventPublisher,
+		JobEnqueuer:     jobEnqueuer,
+		MessageSequence: messageSequence,
+		Logger:          g.Logger,
+	})
 
 	// handlers
 	authHandler := provider.NewAuthHandler(authService)

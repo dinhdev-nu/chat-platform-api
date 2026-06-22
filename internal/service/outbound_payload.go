@@ -7,16 +7,14 @@ import (
 	"encoding/json"
 	"time"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 )
 
 const deletedUserDisplayName = "Deleted user"
 
 type outboundConversationPayload struct {
-	Event        redis.EventType          `json:"event"`
+	Event        EventType                `json:"event"`
 	ConvID       string                   `json:"conv_id"`
 	Conversation dto.ConversationListItem `json:"conversation"`
 }
@@ -28,7 +26,7 @@ type outboundUserSummary struct {
 }
 
 type outboundMemberPayload struct {
-	Event        redis.EventType           `json:"event"`
+	Event        EventType                 `json:"event"`
 	ConvID       string                    `json:"conv_id"`
 	UserID       string                    `json:"user_id"`
 	User         *outboundUserSummary      `json:"user,omitempty"`
@@ -37,7 +35,7 @@ type outboundMemberPayload struct {
 }
 
 type outboundMessageNewPayload struct {
-	Event    redis.EventType     `json:"event"`
+	Event    EventType           `json:"event"`
 	ConvID   string              `json:"conv_id"`
 	MsgID    string              `json:"msg_id"`
 	SenderID string              `json:"sender_id"`
@@ -47,7 +45,7 @@ type outboundMessageNewPayload struct {
 }
 
 type outboundMessageEditedPayload struct {
-	Event    redis.EventType      `json:"event"`
+	Event    EventType            `json:"event"`
 	ConvID   string               `json:"conv_id"`
 	MsgID    string               `json:"msg_id"`
 	Content  string               `json:"content"`
@@ -56,39 +54,39 @@ type outboundMessageEditedPayload struct {
 }
 
 type outboundMessageDeletedPayload struct {
-	Event     redis.EventType `json:"event"`
-	ConvID    string          `json:"conv_id"`
-	MsgID     string          `json:"msg_id"`
-	IsDeleted bool            `json:"is_deleted"`
-	DeletedAt string          `json:"deleted_at"`
+	Event     EventType `json:"event"`
+	ConvID    string    `json:"conv_id"`
+	MsgID     string    `json:"msg_id"`
+	IsDeleted bool      `json:"is_deleted"`
+	DeletedAt string    `json:"deleted_at"`
 }
 
 type outboundMessageReadPayload struct {
-	Event         redis.EventType `json:"event"`
-	ConvID        string          `json:"conv_id"`
-	UserID        string          `json:"user_id"`
-	LastReadMsgID string          `json:"last_read_msg_id"`
-	ReadAt        string          `json:"read_at"`
+	Event         EventType `json:"event"`
+	ConvID        string    `json:"conv_id"`
+	UserID        string    `json:"user_id"`
+	LastReadMsgID string    `json:"last_read_msg_id"`
+	ReadAt        string    `json:"read_at"`
 }
 
 type outboundReactionPayload struct {
-	Event  redis.EventType `json:"event"`
-	ConvID string          `json:"conv_id"`
-	MsgID  string          `json:"msg_id"`
-	UserID string          `json:"user_id"`
-	Emoji  string          `json:"emoji"`
-	Action string          `json:"action"`
+	Event  EventType `json:"event"`
+	ConvID string    `json:"conv_id"`
+	MsgID  string    `json:"msg_id"`
+	UserID string    `json:"user_id"`
+	Emoji  string    `json:"emoji"`
+	Action string    `json:"action"`
 }
 
 func conversationCreatedPayload(item dto.ConversationListItem) json.RawMessage {
 	return marshalRaw(outboundConversationPayload{
-		Event:        redis.EventConvCreated,
+		Event:        EventConvCreated,
 		ConvID:       item.ID,
 		Conversation: item,
 	})
 }
 
-func memberPayload(event redis.EventType, convID, userID []byte, user, actor *outboundUserSummary, conversation *dto.ConversationListItem) json.RawMessage {
+func memberPayload(event EventType, convID, userID []byte, user, actor *outboundUserSummary, conversation *dto.ConversationListItem) json.RawMessage {
 	return marshalRaw(outboundMemberPayload{
 		Event:        event,
 		ConvID:       hex.EncodeToString(convID),
@@ -102,7 +100,7 @@ func memberPayload(event redis.EventType, convID, userID []byte, user, actor *ou
 func messageNewPayload(mm *model.MessageWithMeta) json.RawMessage {
 	msg := messageResponseFromMeta(mm)
 	return marshalRaw(outboundMessageNewPayload{
-		Event:    redis.EventNewMessage,
+		Event:    EventNewMessage,
 		ConvID:   msg.ConversationID,
 		MsgID:    msg.ID,
 		SenderID: msg.SenderID,
@@ -120,7 +118,7 @@ func messageEditedPayload(msg *model.Message, sender *model.User) json.RawMessag
 		content = *msg.Content
 	}
 	return marshalRaw(outboundMessageEditedPayload{
-		Event:    redis.EventEditMessage,
+		Event:    EventEditMessage,
 		ConvID:   hex.EncodeToString(msg.ConversationID),
 		MsgID:    hex.EncodeToString(msg.ID),
 		Content:  content,
@@ -131,7 +129,7 @@ func messageEditedPayload(msg *model.Message, sender *model.User) json.RawMessag
 
 func messageDeletedPayload(convID, msgID []byte, deletedAt time.Time) json.RawMessage {
 	return marshalRaw(outboundMessageDeletedPayload{
-		Event:     redis.EventDelMessage,
+		Event:     EventDelMessage,
 		ConvID:    hex.EncodeToString(convID),
 		MsgID:     hex.EncodeToString(msgID),
 		IsDeleted: true,
@@ -141,7 +139,7 @@ func messageDeletedPayload(convID, msgID []byte, deletedAt time.Time) json.RawMe
 
 func messageReadPayload(convID, userID, lastReadMsgID []byte, readAt time.Time) json.RawMessage {
 	return marshalRaw(outboundMessageReadPayload{
-		Event:         redis.EventReadMessage,
+		Event:         EventReadMessage,
 		ConvID:        hex.EncodeToString(convID),
 		UserID:        hex.EncodeToString(userID),
 		LastReadMsgID: hex.EncodeToString(lastReadMsgID),
@@ -151,7 +149,7 @@ func messageReadPayload(convID, userID, lastReadMsgID []byte, readAt time.Time) 
 
 func reactionTogglePayload(convID, msgID, userID []byte, emoji, action string) json.RawMessage {
 	return marshalRaw(outboundReactionPayload{
-		Event:  redis.EventToggleReaction,
+		Event:  EventToggleReaction,
 		ConvID: hex.EncodeToString(convID),
 		MsgID:  hex.EncodeToString(msgID),
 		UserID: hex.EncodeToString(userID),
@@ -181,6 +179,7 @@ func userSummaryFromParts(userID []byte, name string, avatarURL *string) *outbou
 
 func conversationListItemForUser(
 	ctx context.Context,
+	presence PresenceStore,
 	conv *model.Conversation,
 	userID []byte,
 	role model.MemberRole,
@@ -202,7 +201,7 @@ func conversationListItemForUser(
 			if dmPeer.AvatarURL != nil {
 				item.AvatarURL = dmPeer.AvatarURL
 			}
-			item.IsOnline = isUserOnline(ctx, dmPeer.ID)
+			item.IsOnline = isUserOnline(ctx, presence, dmPeer.ID)
 			if item.IsOnline {
 				item.MemberOnlineCount = 1
 			}
@@ -211,7 +210,7 @@ func conversationListItemForUser(
 		return item
 	}
 
-	item.MemberOnlineCount = onlineMemberCountExcept(ctx, userID, memberIDs)
+	item.MemberOnlineCount = onlineMemberCountExcept(ctx, presence, userID, memberIDs)
 	item.IsOnline = item.MemberOnlineCount > 0
 	return item
 }
@@ -320,16 +319,16 @@ func optionalTime(value *time.Time) *string {
 	return &formatted
 }
 
-func isUserOnline(ctx context.Context, userID []byte) bool {
-	if g.Presence == nil || len(userID) == 0 {
+func isUserOnline(ctx context.Context, presence PresenceStore, userID []byte) bool {
+	if presence == nil || len(userID) == 0 {
 		return false
 	}
-	online, err := g.Presence.IsOnline(ctx, userID)
+	online, err := presence.IsOnline(ctx, userID)
 	return err == nil && online
 }
 
-func onlineMemberCountExcept(ctx context.Context, currentUID []byte, memberIDs [][]byte) int {
-	if g.Presence == nil || len(memberIDs) == 0 {
+func onlineMemberCountExcept(ctx context.Context, presence PresenceStore, currentUID []byte, memberIDs [][]byte) int {
+	if presence == nil || len(memberIDs) == 0 {
 		return 0
 	}
 
@@ -344,7 +343,7 @@ func onlineMemberCountExcept(ctx context.Context, currentUID []byte, memberIDs [
 		return 0
 	}
 
-	onlineByID, err := g.Presence.BulkIsOnline(ctx, others)
+	onlineByID, err := presence.BulkIsOnline(ctx, others)
 	if err != nil {
 		return 0
 	}

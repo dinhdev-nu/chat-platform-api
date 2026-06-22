@@ -43,7 +43,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return
 	}
 
-	res := updatedUser.ToUserResponse()
+	res := dto.UserResponseFromModel(updatedUser)
 	r.OK(c, &res, "User updated successfully")
 }
 
@@ -117,7 +117,7 @@ func (h *UserHandler) Me(c *gin.Context) {
 		_ = c.Error(ar.Unauthorized("Unauthorized"))
 		return
 	}
-	res := user.ToUserResponse()
+	res := dto.UserResponseFromModel(user)
 	r.OK(c, &res, "User info retrieved successfully")
 }
 
