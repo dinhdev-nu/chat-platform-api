@@ -600,7 +600,7 @@ func (s *RoomService) enqueueSystemMessage(parent context.Context, convID, sende
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 		)
-		s.insertSystemMessageFallback(payload)
+		s.insertSystemMessageFallback(parent, payload)
 		return
 	}
 	if err := g.Stream.EnqueueJob(ctx, queue.JobCreateConversationSystemMessage, payload); err != nil {
@@ -609,12 +609,12 @@ func (s *RoomService) enqueueSystemMessage(parent context.Context, convID, sende
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(err),
 		)
-		s.insertSystemMessageFallback(payload)
+		s.insertSystemMessageFallback(parent, payload)
 	}
 }
 
-func (s *RoomService) insertSystemMessageFallback(payload queue.ConversationSystemMessagePayload) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *RoomService) insertSystemMessageFallback(parent context.Context, payload queue.ConversationSystemMessagePayload) {
+	ctx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 
 	content := payload.Content

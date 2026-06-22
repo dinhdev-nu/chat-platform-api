@@ -248,7 +248,7 @@ func (s *AuthService) enforceDeviceLimit(ctx context.Context, userID []byte) err
 		return err
 	}
 	if len(jtisToEvict) > 0 {
-		if err := s.revokeSessions(jtisToEvict); err != nil {
+		if err := s.revokeSessions(ctx, jtisToEvict); err != nil {
 			return err
 		}
 	}
@@ -341,7 +341,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		g.Logger.Warn("Failed to set token last_used throttle", zap.Error(err))
 	}
 	if shouldUpdate {
-		s.enqueueTokenLastUsed(jti, time.Now())
+		s.enqueueTokenLastUsed(ctx, jti, time.Now())
 	}
 
 	return &user, jti, nil
@@ -375,8 +375,8 @@ func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string)
 	return newUser, nil
 }
 
-func (s *AuthService) revokeSessions(jtis [][]byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *AuthService) revokeSessions(parent context.Context, jtis [][]byte) error {
+	ctx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 
 	if g.Session == nil {
@@ -405,11 +405,11 @@ func (s *AuthService) revokeSessions(jtis [][]byte) error {
 	return nil
 }
 
-func (s *AuthService) enqueueTokenLastUsed(jti []byte, usedAt time.Time) {
+func (s *AuthService) enqueueTokenLastUsed(parent context.Context, jti []byte, usedAt time.Time) {
 	jtiCopy := append([]byte(nil), jti...)
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := detachedContext(parent, 2*time.Second)
 		defer cancel()
 
 		payload := queue.AuthTokenLastUsedPayload{
