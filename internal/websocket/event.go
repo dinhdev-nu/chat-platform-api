@@ -51,12 +51,20 @@ const (
 	SysContactsAdd     = "contacts.add"
 )
 
+const presenceEventChannel = "presence:events"
+
 type sysEvent struct {
 	Type    string          `json:"type"`              // SysConvSubscribe | SysConvUnsubscribe | SysContactsSet | SysContactsAdd
 	ConvID  string          `json:"conv_id,omitempty"` // hex conv_id
 	UserID  string          `json:"user_id,omitempty"` // hex user_id
 	UserIDs []string        `json:"user_ids,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"` // optional client-facing event payload
+}
+
+type presenceEvent struct {
+	UserID   string   `json:"user_id"`
+	IsOnline bool     `json:"is_online"`
+	ConvIDs  []string `json:"conv_ids,omitempty"`
 }
 
 const (

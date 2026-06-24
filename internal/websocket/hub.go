@@ -40,7 +40,7 @@ func NewHub(ctx context.Context, rdb *redis.Client, rm *RoomManager, log *zap.Lo
 		clients:  make(map[string]map[string]*Client),
 		channels: make(map[string]map[string]struct{}),
 		rdb:      rdb,
-		pubsub:   rdb.Subscribe(ctx), // empty subscription
+		pubsub:   rdb.Subscribe(ctx, presenceEventChannel),
 		rm:       rm,
 		log:      log,
 	}
@@ -58,7 +58,9 @@ func (h *Hub) Run() {
 				h.shutdown()
 				return
 			}
-			if strings.HasPrefix(msg.Channel, "sys:") {
+			if msg.Channel == presenceEventChannel {
+				h.handlePresenceEvent([]byte(msg.Payload))
+			} else if strings.HasPrefix(msg.Channel, "sys:") {
 				// internal system Hub - Hub sử dụng channel này để nhận sự kiện subscribe/unsubscribe từ client
 				h.handleSysEvent(msg.Channel, []byte(msg.Payload))
 			} else {
@@ -110,7 +112,6 @@ func (h *Hub) shutdown() {
 // Register adds a WebSocket client and subscribes its Redis channels.
 func (h *Hub) Register(client *Client, convIDs [][]byte) bool {
 	newChannels := make([]string, 0, len(client.convs)+1)
-	firstSession := false
 	// client map
 	h.clientsMu.Lock()
 	if h.stopping.Load() || h.ctx.Err() != nil {
@@ -119,7 +120,6 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) bool {
 	}
 	if _, ok := h.clients[client.uidHex]; !ok {
 		h.clients[client.uidHex] = make(map[string]*Client)
-		firstSession = true
 	}
 	h.clients[client.uidHex][client.ConnID] = client
 	h.clientsMu.Unlock()
@@ -150,9 +150,6 @@ func (h *Hub) Register(client *Client, convIDs [][]byte) bool {
 		if err != nil {
 			h.log.Warn("pubsub subscribe failed", zap.Strings("channels", newChannels), zap.Error(err))
 		}
-	}
-	if firstSession {
-		h.broadcastPresence(client.uidHex, client.snapshotConvs(), true)
 	}
 	return true
 }
@@ -199,30 +196,38 @@ func (h *Hub) Unregister(client *Client) {
 
 	h.rm.ClearSession(client.uid, client.ConnID)
 
-	// Clear viewing state for this specific user (if offline)
+	// Clear local viewing state for this user after the last local session leaves.
+	// Redis viewing entries are tracked per connection and are already removed by ClearSession.
 	if !stillOnline {
 		h.rm.ClearAll(client.uid)
 	}
-	if !stillOnline && !h.stopping.Load() {
+
+	wentOffline := false
+	if !h.stopping.Load() && h.ctx.Err() == nil {
 		ctx, cancel := h.redisContext()
-		// cleanup presence via centralized PresenceStore
 		if g.Presence != nil {
-			if err := g.Presence.SetOffline(ctx, client.uid); err != nil {
+			var err error
+			wentOffline, err = g.Presence.SetSessionOffline(ctx, client.uid, client.ConnID)
+			if err != nil {
 				h.log.Warn("failed to clear user presence",
 					zap.String("uid", client.uidHex),
 					zap.Error(err),
 				)
 			}
-		} else {
+		} else if !stillOnline {
 			if err := h.rdb.Del(ctx, presenceKey(client.uidHex)).Err(); err != nil {
 				h.log.Warn("failed to clear fallback user presence",
 					zap.String("uid", client.uidHex),
 					zap.Error(err),
 				)
 			}
+			wentOffline = true
 		}
 		cancel()
-		h.broadcastPresence(client.uidHex, convIDs, false)
+	}
+
+	if wentOffline {
+		h.publishPresence(client.uidHex, convIDs, false)
 	}
 
 	// Unsubscribe Redis channels that are now empty
@@ -490,6 +495,45 @@ func (h *Hub) sessionsForUser(uidHex string) []*Client {
 func (h *Hub) broadcastPresence(uidHex string, convIDs []string, isOnline bool) {
 	h.broadcastPresenceToContacts(uidHex, isOnline)
 	h.broadcastPresenceToConvs(uidHex, convIDs, isOnline)
+}
+
+func (h *Hub) publishPresence(uidHex string, convIDs []string, isOnline bool) {
+	if !isValidHexUID(uidHex) {
+		return
+	}
+
+	raw, err := json.Marshal(presenceEvent{
+		UserID:   uidHex,
+		IsOnline: isOnline,
+		ConvIDs:  convIDs,
+	})
+	if err != nil {
+		return
+	}
+
+	ctx, cancel := h.redisContext()
+	err = h.rdb.Publish(ctx, presenceEventChannel, raw).Err()
+	cancel()
+	if err != nil {
+		h.log.Warn("presence publish failed",
+			zap.String("uid", uidHex),
+			zap.Bool("is_online", isOnline),
+			zap.Error(err),
+		)
+		h.broadcastPresence(uidHex, convIDs, isOnline)
+	}
+}
+
+func (h *Hub) handlePresenceEvent(payload []byte) {
+	var evt presenceEvent
+	if err := json.Unmarshal(payload, &evt); err != nil {
+		return
+	}
+	evt.UserID = strings.ToLower(strings.TrimSpace(evt.UserID))
+	if !isValidHexUID(evt.UserID) {
+		return
+	}
+	h.broadcastPresence(evt.UserID, evt.ConvIDs, evt.IsOnline)
 }
 
 func (h *Hub) broadcastPresenceToContacts(uidHex string, isOnline bool) {

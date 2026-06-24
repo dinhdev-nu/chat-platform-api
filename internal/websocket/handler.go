@@ -77,11 +77,16 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		h.log.Error("Failed to upgrade to WebSocket", zap.Error(err))
 		return
 	}
+	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
+	becameOnline := true
 	// SET presence via centralized PresenceStore
 	presenceCtx, cancelPresence := context.WithTimeout(ctx, redisOperationTimeout)
 
 	if g.Presence != nil {
-		if err := g.Presence.SetOnline(presenceCtx, user.ID); err != nil {
+		var err error
+		becameOnline, err = g.Presence.SetSessionOnline(presenceCtx, user.ID, client.ConnID)
+		if err != nil {
+			becameOnline = false
 			h.log.Warn("failed to set user online",
 				zap.String("user_id", hex.EncodeToString(user.ID)),
 				zap.Error(err),
@@ -95,6 +100,7 @@ func (h *Handler) ServeWS(c *gin.Context) {
 			presenceKey(uidHex), 1,
 			3*pingPeriod,
 		).Err(); err != nil {
+			becameOnline = false
 			h.log.Warn("failed to set fallback user online",
 				zap.String("user_id", uidHex),
 				zap.Error(err),
@@ -104,12 +110,25 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	// Tạo client mới và đăng ký vào hub
 	cancelPresence()
 
-	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
 	if !h.hub.Register(client, convIDs) {
+		if g.Presence != nil {
+			presenceCtx, cancelPresence := context.WithTimeout(ctx, redisOperationTimeout)
+			if _, err := g.Presence.SetSessionOffline(presenceCtx, user.ID, client.ConnID); err != nil {
+				h.log.Warn("failed to rollback user presence",
+					zap.String("user_id", client.uidHex),
+					zap.Error(err),
+				)
+			}
+			cancelPresence()
+		}
 		if err := conn.Close(); err != nil {
 			h.log.Debug("failed to close WebSocket during shutdown", zap.Error(err))
 		}
 		return
+	}
+
+	if becameOnline {
+		h.hub.publishPresence(client.uidHex, client.snapshotConvs(), true)
 	}
 
 	go client.writePump()

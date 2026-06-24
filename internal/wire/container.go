@@ -25,7 +25,7 @@ func NewContainer(ctx context.Context) *Container {
 
 	// infrastructure
 	jwt := provider.NewJWTManager()
-	roomManager := websocket.NewRoomManager()
+	roomManager := websocket.NewRoomManager(g.RedisClient)
 	roomViewer := roomManager
 	hub := websocket.NewHub(ctx, g.RedisClient, roomManager, g.Logger)
 	go hub.Run()

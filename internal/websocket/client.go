@@ -172,7 +172,7 @@ func (c *Client) readPump() {
 		// Refresh presence TTL so presence is tied to protocol-level pong
 		if g.Presence != nil {
 			ctx, cancel := c.hub.redisContext()
-			err := g.Presence.Heartbeat(ctx, c.uid)
+			err := g.Presence.HeartbeatSession(ctx, c.uid, c.ConnID)
 			cancel()
 			if err != nil {
 				c.log.Warn("ws presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
@@ -185,6 +185,7 @@ func (c *Client) readPump() {
 				c.log.Warn("ws fallback presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
 			}
 		}
+		c.rm.HeartbeatSession(c.uid, c.ConnID)
 		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 
