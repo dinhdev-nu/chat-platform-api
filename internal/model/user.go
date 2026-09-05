@@ -1,10 +1,8 @@
 package model
 
 import (
-	"encoding/hex"
 	"time"
 
-	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	"gorm.io/datatypes"
 )
 
@@ -50,17 +48,6 @@ func (u *User) IsActive() bool {
 
 func (u *User) IsSuspended() bool {
 	return u.Status == UserStatusSuspended
-}
-
-func (u *User) ToUserResponse() dto.UserResponse {
-	return dto.UserResponse{
-		ID:        hex.EncodeToString(u.ID),
-		Email:     u.Email,
-		Name:      u.Username,
-		AvatarURL: u.AvatarURL,
-		Bio:       u.Bio,
-		CreatedAt: u.CreatedAt.Format(time.RFC3339),
-	}
 }
 
 type UserToken struct {

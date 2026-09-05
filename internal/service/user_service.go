@@ -6,15 +6,50 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
-	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
 )
 
+type ControlPublisher interface {
+	PublishChannel(context.Context, string, []byte) error
+}
+
+type BulkPresenceReader interface {
+	BulkIsOnline(context.Context, [][]byte) (map[string]bool, error)
+}
+
+type ProfileCacheWriter interface {
+	WarmUser(context.Context, []byte, string) error
+}
+
+type UserStore interface {
+	Update(ctx context.Context, userID []byte, update *model.UserProfileUpdate) error
+	FindByID(ctx context.Context, id []byte) (*model.User, error)
+	SearchUsers(ctx context.Context, curUID []byte, q string, cursor *string, limit int) ([]*model.SearchUser, error)
+	CheckUserExists(ctx context.Context, id []byte) (bool, error)
+	GetContactPair(ctx context.Context, uid1, uid2 []byte) ([]*model.UserContact, error)
+	UpdateContactStatus(ctx context.Context, contactID uint64, status model.ContactStatus) (int64, error)
+	CreateContactRequest(ctx context.Context, userID, contactID []byte) error
+	GetContactRecord(ctx context.Context, userID, contactID []byte) (*model.UserContact, error)
+	GetAcceptedContacts(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
+	GetIncomingRequests(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
+}
+
+type UserDependencies struct {
+	Users     UserStore
+	UserCache ProfileCacheWriter
+	Presence  BulkPresenceReader
+	Controls  ControlPublisher
+	Logger    *zap.Logger
+}
+
 type UserService struct {
-	userRepo r.UserRepository
+	userRepo  UserStore
+	userCache ProfileCacheWriter
+	presence  BulkPresenceReader
+	controls  ControlPublisher
+	logger    *zap.Logger
 }
 
 const (
@@ -28,8 +63,14 @@ type contactSysEvent struct {
 	UserIDs []string `json:"user_ids,omitempty"`
 }
 
-func NewUserService(ur r.UserRepository) *UserService {
-	return &UserService{userRepo: ur}
+func NewUserService(d UserDependencies) *UserService {
+	return &UserService{
+		userRepo:  d.Users,
+		userCache: d.UserCache,
+		presence:  d.Presence,
+		controls:  d.Controls,
+		logger:    loggerOrNop(d.Logger),
+	}
 }
 
 func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *model.UserProfileUpdate) (*model.User, error) {
@@ -49,11 +90,11 @@ func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *mod
 
 		payload, err := json.Marshal(updated)
 		if err != nil {
-			g.Logger.Warn("userService.UpdateUser: failed to marshal user cache payload", zap.Error(err))
+			s.logger.Warn("userService.UpdateUser: failed to marshal user cache payload", zap.Error(err))
 			return
 		}
-		if err := g.Session.WarmUser(cacheCtx, userID, string(payload)); err != nil {
-			g.Logger.Warn("failed to warm updated user cache", zap.Error(err))
+		if err := s.userCache.WarmUser(cacheCtx, userID, string(payload)); err != nil {
+			s.logger.Warn("failed to warm updated user cache", zap.Error(err))
 		}
 	}(ctx)
 
@@ -246,8 +287,8 @@ func (s *UserService) attachOnlineStatus(ctx context.Context, rows []*model.Sear
 	}
 
 	onlineByID := map[string]bool{}
-	if g.Presence != nil && len(ids) > 0 {
-		if result, err := g.Presence.BulkIsOnline(ctx, ids); err == nil {
+	if s.presence != nil && len(ids) > 0 {
+		if result, err := s.presence.BulkIsOnline(ctx, ids); err == nil {
 			onlineByID = result
 		}
 	}
@@ -285,19 +326,19 @@ func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []b
 }
 
 func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte, evt contactSysEvent) {
-	if g.RedisClient == nil {
+	if s.controls == nil {
 		return
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
-		g.Logger.Warn("userService.publishContactSysEvent: failed to marshal event", zap.Error(err))
+		s.logger.Warn("userService.publishContactSysEvent: failed to marshal event", zap.Error(err))
 		return
 	}
 	go func(parent context.Context) {
 		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
 		defer cancel()
-		if err := g.RedisClient.Publish(publishCtx, "sys:"+hex.EncodeToString(userID), payload).Err(); err != nil {
-			g.Logger.Warn("userService.publishContactSysEvent: failed to publish event",
+		if err := s.controls.PublishChannel(publishCtx, "sys:"+hex.EncodeToString(userID), payload); err != nil {
+			s.logger.Warn("userService.publishContactSysEvent: failed to publish event",
 				zap.String("user_id", hex.EncodeToString(userID)),
 				zap.Error(err),
 			)

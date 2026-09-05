@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
+	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	r "github.com/dinhdev-nu/chat-platform-api/pkg/response"
@@ -16,11 +18,20 @@ import (
 	"github.com/gin-gonic/gin/binding"
 )
 
-type UserHandler struct {
-	userService *s.UserService
+type userService interface {
+	UpdateUser(ctx context.Context, userID []byte, update *model.UserProfileUpdate) (*model.User, error)
+	Search(ctx context.Context, uid []byte, q string, cursor *string, limit int) (*s.ResultPage[*model.SearchUser], error)
+	SendContactRequest(ctx context.Context, senderUID, targetUID []byte) (model.ContactRequestResult, error)
+	AcceptContactRequest(ctx context.Context, currentUID, senderUID []byte) error
+	GetContacts(ctx context.Context, userID []byte, cursor *string, limit int) (*s.ResultPage[*model.SearchUser], error)
+	GetIncomingContactRequests(ctx context.Context, userID []byte, cursor *string, limit int) (*s.ResultPage[*model.SearchUser], error)
 }
 
-func NewUserHandler(us *s.UserService) *UserHandler {
+type UserHandler struct {
+	userService userService
+}
+
+func NewUserHandler(us userService) *UserHandler {
 	return &UserHandler{userService: us}
 }
 
@@ -43,7 +54,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return
 	}
 
-	res := updatedUser.ToUserResponse()
+	res := presenter.User(updatedUser)
 	r.OK(c, &res, "User updated successfully")
 }
 
@@ -117,7 +128,7 @@ func (h *UserHandler) Me(c *gin.Context) {
 		_ = c.Error(ar.Unauthorized("Unauthorized"))
 		return
 	}
-	res := user.ToUserResponse()
+	res := presenter.User(user)
 	r.OK(c, &res, "User info retrieved successfully")
 }
 

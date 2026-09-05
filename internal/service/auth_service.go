@@ -8,41 +8,114 @@ import (
 	"fmt"
 	"time"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
-	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
+	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
 	"go.uber.org/zap"
 )
 
+type JobEnqueuer interface {
+	EnqueueJob(context.Context, string, any) error
+}
+
+type AuthUsers interface {
+	FindByID(ctx context.Context, id []byte) (*model.User, error)
+	FindByEmail(ctx context.Context, email string) (*model.User, error)
+	Create(ctx context.Context, user *model.User) error
+}
+type AuthTokens interface {
+	GetJTIByUserAndDevice(ctx context.Context, userID, deviceID []byte) ([]byte, error)
+	Upsert(ctx context.Context, token *model.UserToken) error
+	CountByUserID(ctx context.Context, userID []byte) (int64, error)
+	GetOldestJTIByUserIDBeyondLimit(ctx context.Context, userID []byte, limit int) ([][]byte, error)
+	DeleteOldestBeyondLimit(ctx context.Context, userID []byte, limit int) error
+	DeleteByJTI(ctx context.Context, jti []byte) error
+}
+
+type TokenManager interface {
+	GenerateToken(jwt.GenerateTokenParams) (*jwt.GenerateTokenResult, error)
+	ParseToken(string) (*jwt.Claims, error)
+}
+type AuthSessions interface {
+	Set(context.Context, []byte, []byte, time.Duration) error
+	Get(context.Context, []byte) (string, error)
+	Revoke(context.Context, []byte) error
+}
+type AuthUserCache interface {
+	ProfileCacheWriter
+	GetUser(context.Context, []byte) (string, error)
+}
+type OTPStore interface {
+	IsLocked(context.Context, string) (bool, error)
+	CanResend(context.Context, string) (bool, error)
+	Set(context.Context, string, string) error
+	SetResendLimit(context.Context, string) error
+	ClearSendState(context.Context, string) error
+	Get(context.Context, string) (string, error)
+	IncrAttempts(context.Context, string) (int64, error)
+	Lock(context.Context, string) error
+	Delete(context.Context, string) error
+}
+type TokenUsageThrottle interface {
+	ShouldRecord(context.Context, []byte) (bool, error)
+}
+
+// SessionTTL comes from configuration. Jobs may be nil (OTP returns an error);
+// a nil UsageThrottle disables best-effort usage recording.
+type AuthDependencies struct {
+	Users         AuthUsers
+	Tokens        AuthTokens
+	JWT           TokenManager
+	OTP           OTPStore
+	Sessions      AuthSessions
+	UserCache     AuthUserCache
+	Jobs          JobEnqueuer
+	UsageThrottle TokenUsageThrottle
+	SessionTTL    time.Duration
+	Logger        *zap.Logger
+	Now           func() time.Time
+}
+
 const (
 	maxDevicesPerUser = 5
 )
 
 type AuthService struct {
-	userRepo   r.UserRepository // 'u' viết thường vì tính đóng gói của go ( chỉ tương tác không can thiệp )
-	tokenRepo  r.UserTokenRepository
-	jwtManager *jwt.JWTManager
+	userRepo      AuthUsers
+	tokenRepo     AuthTokens
+	jwtManager    TokenManager
+	otp           OTPStore
+	sessions      AuthSessions
+	userCache     AuthUserCache
+	jobs          JobEnqueuer
+	usageThrottle TokenUsageThrottle
+	sessionTTL    time.Duration
+	logger        *zap.Logger
+	now           func() time.Time
 }
 
-func NewAuthService(
-	ur r.UserRepository,
-	tr r.UserTokenRepository,
-	jm *jwt.JWTManager,
-) *AuthService {
+func NewAuthService(d AuthDependencies) *AuthService {
 	return &AuthService{
-		userRepo:   ur,
-		tokenRepo:  tr,
-		jwtManager: jm,
+		userRepo:      d.Users,
+		tokenRepo:     d.Tokens,
+		jwtManager:    d.JWT,
+		otp:           d.OTP,
+		sessions:      d.Sessions,
+		userCache:     d.UserCache,
+		jobs:          d.Jobs,
+		usageThrottle: d.UsageThrottle,
+		sessionTTL:    d.SessionTTL,
+		logger:        loggerOrNop(d.Logger),
+		now:           clockOrNow(d.Now),
 	}
 }
 
 func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto.SendOTPResponse, error) {
-	locked, err := g.OTPStore.IsLocked(ctx, req.Email)
+	locked, err := s.otp.IsLocked(ctx, req.Email)
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
@@ -53,7 +126,7 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		)
 	}
 
-	canResend, err := g.OTPStore.CanResend(ctx, req.Email)
+	canResend, err := s.otp.CanResend(ctx, req.Email)
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
@@ -69,11 +142,11 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		return nil, ar.Internal(err)
 	}
 
-	if err := g.OTPStore.Set(ctx, req.Email, otp); err != nil {
+	if err := s.otp.Set(ctx, req.Email, otp); err != nil {
 		return nil, ar.Internal(err)
 	}
 
-	if err := g.OTPStore.SetResendLimit(ctx, req.Email); err != nil {
+	if err := s.otp.SetResendLimit(ctx, req.Email); err != nil {
 		return nil, ar.Internal(err)
 	}
 
@@ -87,22 +160,22 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		cleanupCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
 		defer cancel()
 
-		if cleanupErr := g.OTPStore.ClearSendState(cleanupCtx, req.Email); cleanupErr != nil {
-			g.Logger.Warn("failed to cleanup OTP send state",
+		if cleanupErr := s.otp.ClearSendState(cleanupCtx, req.Email); cleanupErr != nil {
+			s.logger.Warn("failed to cleanup OTP send state",
 				zap.String("email", req.Email),
 				zap.String("reason", reason),
 				zap.Error(cleanupErr),
 			)
 		}
 	}
-	if g.Stream == nil {
+	if s.jobs == nil {
 		clearSendState("stream unavailable")
 		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: stream store unavailable"))
 	}
 
 	enqueueCtx, cancel := detachedContext(ctx, streamEnqueueTimeout)
 	defer cancel()
-	if err := g.Stream.EnqueueJob(enqueueCtx, queue.JobSendOTPEmail, payload); err != nil {
+	if err := s.jobs.EnqueueJob(enqueueCtx, queue.JobSendOTPEmail, payload); err != nil {
 		clearSendState("enqueue failed")
 		return nil, ar.Internal(fmt.Errorf("enqueue OTP email job: %w", err))
 	}
@@ -115,7 +188,7 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 }
 
 func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, ip string) (*dto.LoginResponse, error) {
-	if err := verifyOTPCode(ctx, req.Email, req.OTP); err != nil {
+	if err := s.verifyOTPCode(ctx, req.Email, req.OTP); err != nil {
 		return nil, err
 	}
 
@@ -130,8 +203,8 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 	return s.createLoginSession(ctx, user, req, ip)
 }
 
-func verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
-	locked, err := g.OTPStore.IsLocked(ctx, email)
+func (s *AuthService) verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
+	locked, err := s.otp.IsLocked(ctx, email)
 	if err != nil {
 		return ar.Internal(err)
 	}
@@ -142,7 +215,7 @@ func verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
 		)
 	}
 
-	stored, err := g.OTPStore.Get(ctx, email)
+	stored, err := s.otp.Get(ctx, email)
 	if err != nil {
 		return ar.Internal(err)
 	}
@@ -151,12 +224,12 @@ func verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
 	}
 
 	if stored != submittedOTP {
-		attempts, err := g.OTPStore.IncrAttempts(ctx, email)
+		attempts, err := s.otp.IncrAttempts(ctx, email)
 		if err != nil {
 			return ar.Internal(err)
 		}
 		if attempts >= 5 {
-			if err := g.OTPStore.Lock(ctx, email); err != nil {
+			if err := s.otp.Lock(ctx, email); err != nil {
 				return ar.Internal(err)
 			}
 		}
@@ -165,7 +238,7 @@ func verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
 			fmt.Sprintf("Invalid OTP. You have %d attempts left", 5-attempts))
 	}
 
-	if err := g.OTPStore.Delete(ctx, email); err != nil {
+	if err := s.otp.Delete(ctx, email); err != nil {
 		return ar.Internal(err)
 	}
 	return nil
@@ -187,7 +260,7 @@ func (s *AuthService) createLoginSession(
 		return nil, ar.Internal(err)
 	}
 	if jti != nil {
-		if err := g.Session.Revoke(ctx, jti); err != nil {
+		if err := s.sessions.Revoke(ctx, jti); err != nil {
 			return nil, ar.Internal(err)
 		}
 	}
@@ -212,7 +285,7 @@ func (s *AuthService) createLoginSession(
 		DeviceName: &req.DeviceName,
 		IPAddress:  &ip,
 		ExpiresAt:  token.ExpiresAT,
-		LastUsedAt: time.Now(), // Không có trigger nên set thủ công
+		LastUsedAt: s.now(), // Không có trigger nên set thủ công
 	}
 	if err := s.tokenRepo.Upsert(ctx, userToken); err != nil {
 		return nil, ar.Internal(err)
@@ -222,15 +295,15 @@ func (s *AuthService) createLoginSession(
 		return nil, ar.Internal(err)
 	}
 
-	expireDuration := time.Duration(g.Config.Jwt.ExpireTime) * time.Second
-	if err := g.Session.Set(ctx, jti, user.ID, expireDuration); err != nil {
-		g.Logger.Warn("Failed to set session in cache", zap.Error(err))
+	expireDuration := s.sessionTTL
+	if err := s.sessions.Set(ctx, jti, user.ID, expireDuration); err != nil {
+		s.logger.Warn("Failed to set session in cache", zap.Error(err))
 	}
 
 	return &dto.LoginResponse{
 		AccessToken: token.Token,
 		ExpiresAt:   token.ExpiresAT,
-		User:        user.ToUserResponse(),
+		User:        presenter.User(user),
 	}, nil
 }
 
@@ -253,17 +326,17 @@ func (s *AuthService) enforceDeviceLimit(ctx context.Context, userID []byte) err
 		}
 	}
 	if err := s.tokenRepo.DeleteOldestBeyondLimit(ctx, userID, maxDevicesPerUser); err != nil {
-		g.Logger.Warn("Failed to evict old devices", zap.Error(err))
+		s.logger.Warn("Failed to evict old devices", zap.Error(err))
 	}
 	return nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, jti []byte) error {
-	if err := g.Session.Revoke(ctx, jti); err != nil {
+	if err := s.sessions.Revoke(ctx, jti); err != nil {
 		return ar.Internal(err)
 	}
 	if err := s.tokenRepo.DeleteByJTI(ctx, jti); err != nil {
-		g.Logger.Warn("Failed to delete token record after revoke", zap.Error(err))
+		s.logger.Warn("Failed to delete token record after revoke", zap.Error(err))
 	}
 
 	return nil
@@ -279,7 +352,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 2")
 	}
 
-	hexUserID, err := g.Session.Get(ctx, jti)
+	hexUserID, err := s.sessions.Get(ctx, jti)
 	if err != nil {
 		return nil, nil, ar.Internal(err)
 	}
@@ -301,7 +374,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 	}
 
 	// Kiểm tra user status từ cache để có thể revoke token ngay khi user bị suspend/deactivate
-	cached, err := g.Session.GetUser(ctx, userID)
+	cached, err := s.userCache.GetUser(ctx, userID)
 	if err != nil {
 		return nil, nil, ar.Internal(err)
 	}
@@ -321,8 +394,8 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		cached = string(userJson)
 
 		// warm up cache
-		if err := g.Session.WarmUser(ctx, userID, cached); err != nil {
-			g.Logger.Warn("Failed to cache user status", zap.Error(err))
+		if err := s.userCache.WarmUser(ctx, userID, cached); err != nil {
+			s.logger.Warn("Failed to cache user status", zap.Error(err))
 		}
 	}
 
@@ -335,16 +408,21 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		return nil, nil, ar.New(ar.ErrForbidden, "User account is not active")
 	}
 
-	lastUsedKey := fmt.Sprintf("token:last_used:%s", hex.EncodeToString(jti))
-	shouldUpdate, err := g.RedisClient.SetNX(ctx, lastUsedKey, 1, 10*time.Minute).Result()
+	s.recordTokenUsage(ctx, jti)
+	return &user, jti, nil
+}
+
+func (s *AuthService) recordTokenUsage(ctx context.Context, jti []byte) {
+	if s.usageThrottle == nil {
+		return
+	}
+	shouldUpdate, err := s.usageThrottle.ShouldRecord(ctx, jti)
 	if err != nil {
-		g.Logger.Warn("Failed to set token last_used throttle", zap.Error(err))
+		s.logger.Warn("Failed to set token last_used throttle", zap.Error(err))
 	}
 	if shouldUpdate {
-		s.enqueueTokenLastUsed(ctx, jti, time.Now())
+		s.enqueueTokenLastUsed(ctx, jti, s.now())
 	}
-
-	return &user, jti, nil
 }
 
 func (s *AuthService) findByEmailOrCreateUser(ctx context.Context, email string) (*model.User, error) {
@@ -379,21 +457,21 @@ func (s *AuthService) revokeSessions(parent context.Context, jtis [][]byte) erro
 	ctx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 
-	if g.Session == nil {
+	if s.sessions == nil {
 		return fmt.Errorf("session store unavailable for evicted device revoke: count=%d", len(jtis))
 	}
 
 	var firstErr error
 	for _, jti := range jtis {
 		if len(jti) != 16 {
-			g.Logger.Warn("authService: skip invalid evicted session jti", zap.Int("jti_len", len(jti)))
+			s.logger.Warn("authService: skip invalid evicted session jti", zap.Int("jti_len", len(jti)))
 			continue
 		}
-		if err := g.Session.Revoke(ctx, jti); err != nil {
+		if err := s.sessions.Revoke(ctx, jti); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			g.Logger.Warn("authService: failed to revoke evicted session",
+			s.logger.Warn("authService: failed to revoke evicted session",
 				zap.String("jti", hex.EncodeToString(jti)),
 				zap.Error(err),
 			)
@@ -416,17 +494,31 @@ func (s *AuthService) enqueueTokenLastUsed(parent context.Context, jti []byte, u
 			JTI:    jtiCopy,
 			UsedAt: usedAt,
 		}
-		if g.Stream == nil {
-			g.Logger.Warn("authService: stream unavailable for token last_used update, dropping best-effort job",
+		if s.jobs == nil {
+			s.logger.Warn("authService: stream unavailable for token last_used update, dropping best-effort job",
 				zap.String("jti", hex.EncodeToString(jtiCopy)),
 			)
 			return
 		}
-		if err := g.Stream.EnqueueJob(ctx, queue.JobUpdateAuthTokenLastUsed, payload); err != nil {
-			g.Logger.Warn("authService: enqueue token last_used update failed, dropping best-effort job",
+		if err := s.jobs.EnqueueJob(ctx, queue.JobUpdateAuthTokenLastUsed, payload); err != nil {
+			s.logger.Warn("authService: enqueue token last_used update failed, dropping best-effort job",
 				zap.String("jti", hex.EncodeToString(jtiCopy)),
 				zap.Error(err),
 			)
 		}
 	}()
+}
+
+func loggerOrNop(logger *zap.Logger) *zap.Logger {
+	if logger == nil {
+		return zap.NewNop()
+	}
+	return logger
+}
+
+func clockOrNow(now func() time.Time) func() time.Time {
+	if now == nil {
+		return time.Now
+	}
+	return now
 }

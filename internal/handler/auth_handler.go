@@ -1,24 +1,29 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
-	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	r "github.com/dinhdev-nu/chat-platform-api/pkg/response"
-	"github.com/ua-parser/uap-go/uaparser"
-
 	"github.com/gin-gonic/gin"
+	"github.com/ua-parser/uap-go/uaparser"
 )
 
-type AuthHandler struct {
-	authService *s.AuthService
+type authService interface {
+	SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto.SendOTPResponse, error)
+	VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, ip string) (*dto.LoginResponse, error)
+	Logout(ctx context.Context, jti []byte) error
 }
 
-func NewAuthHandler(as *s.AuthService) *AuthHandler {
+type AuthHandler struct {
+	authService authService
+}
+
+func NewAuthHandler(as authService) *AuthHandler {
 	return &AuthHandler{authService: as}
 }
 

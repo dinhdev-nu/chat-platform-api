@@ -1,5 +1,7 @@
 /docs
 /logs
+/audit/
+/test/
 
 .gocache
 .gocache-check

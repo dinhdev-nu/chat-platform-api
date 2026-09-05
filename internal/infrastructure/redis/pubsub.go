@@ -147,3 +147,7 @@ func (b *PubSubBroker) ToJsonRawMessage(payload map[string]any) (json.RawMessage
 	}
 	return json.RawMessage(data), nil
 }
+
+func (b *PubSubBroker) PublishChannel(ctx context.Context, channel string, payload []byte) error {
+	return b.client.Publish(ctx, channel, payload).Err()
+}

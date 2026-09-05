@@ -1,13 +1,13 @@
 package handler
 
 import (
-	"encoding/hex"
+	"context"
 	"strconv"
-	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
+	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
@@ -15,11 +15,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type MessageHandler struct {
-	ms *s.MessageService
+type messageService interface {
+	SendMessage(ctx context.Context, convID, senderID []byte, msgType int8, content string, parentID []byte) (*model.Message, error)
+	SendMessageWithAttachment(ctx context.Context, convID, senderID []byte, msgType int8, content string, parentID []byte, attachments []*model.Attachment) (*model.MessageWithMeta, error)
+	ListMessages(ctx context.Context, uid, convID []byte, cursor *string, limit int) (*s.ResultPage[*model.MessageWithMeta], error)
+	MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error
+	EditMessage(ctx context.Context, userID, msgID []byte, newContent string) (*model.Message, error)
+	DeleteMessage(ctx context.Context, userID, msgID []byte) error
+	ToggleReaction(ctx context.Context, userID, msgID []byte, emoji string) (string, error)
 }
 
-func NewMessageHandler(ms *s.MessageService) *MessageHandler {
+type MessageHandler struct {
+	ms messageService
+}
+
+func NewMessageHandler(ms messageService) *MessageHandler {
 	return &MessageHandler{ms: ms}
 }
 
@@ -40,17 +50,12 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 		return
 	}
 	if len(req.Attachments) == 0 {
-		if req.Content == "" {
-			_ = c.Error(ae.New(ae.ErrValidation, "Message content cannot be empty"))
-			return
-		}
-
 		msg, err := h.ms.SendMessage(c.Request.Context(), convID, user.ID, req.Type, req.Content, []byte(req.ParentID))
 		if err != nil {
 			_ = c.Error(err)
 			return
 		}
-		out := h.msgToDTO(msg)
+		out := presenter.Message(msg)
 		r.OK(c, &out, "Send msg successfully")
 		return
 	}
@@ -59,7 +64,7 @@ func (h *MessageHandler) SendMessage(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	out := h.msgWithMetaToDTO(msgWithMeta)
+	out := presenter.MessageWithMeta(msgWithMeta)
 	r.OK(c, &out, "Send msg with attachment successfully")
 }
 
@@ -89,7 +94,7 @@ func (h *MessageHandler) ListMessages(c *gin.Context) {
 	// map to DTOs
 	items := make([]dto.MessageResponse, len(msgs.Items))
 	for i, it := range msgs.Items {
-		items[i] = h.msgWithMetaToDTO(it)
+		items[i] = presenter.MessageWithMeta(it)
 	}
 	nextCursor := ""
 	if msgs.NextCursor != nil {
@@ -146,7 +151,7 @@ func (h *MessageHandler) EditMessage(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	out := h.msgToDTO(msg)
+	out := presenter.Message(msg)
 	r.OK(c, &out, "Message edited successfully")
 }
 
@@ -206,84 +211,4 @@ func (h *MessageHandler) toAttachmentDomain(attachReq []dto.AttachmentRequest) [
 		}
 	}
 	return attachments
-}
-
-// --- mapping helpers (domain -> dto)
-func (h *MessageHandler) msgToDTO(m *model.Message) dto.MessageResponse {
-	var parentID, content, iv, deletedAt *string
-
-	// ParentID: nil if empty, else pointer to hex string
-	if len(m.ParentID) > 0 {
-		pID := hex.EncodeToString(m.ParentID)
-		parentID = &pID
-	}
-
-	// Content: nil or pointer to string
-	if m.Content != nil {
-		content = m.Content
-	}
-
-	// Iv: nil or pointer to string
-	if m.Iv != nil {
-		iv = m.Iv
-	}
-
-	// DeletedAt: nil if not deleted, else pointer to RFC3339 string
-	if m.DeletedAt != nil {
-		delStr := m.DeletedAt.Format(time.RFC3339)
-		deletedAt = &delStr
-	}
-
-	return dto.MessageResponse{
-		ID:               hex.EncodeToString(m.ID),
-		ConversationID:   hex.EncodeToString(m.ConversationID),
-		SenderID:         hex.EncodeToString(m.SenderID),
-		ParentID:         parentID,
-		Type:             int8(m.Type),
-		Content:          content,
-		ContentEncrypted: m.ContentEncrypted,
-		Iv:               iv,
-		Seq:              m.Seq,
-		IsEdited:         m.IsEdited,
-		IsDeleted:        m.IsDeleted,
-		DeletedAt:        deletedAt,
-		CreatedAt:        m.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:        m.UpdatedAt.Format(time.RFC3339),
-	}
-}
-
-func (h *MessageHandler) msgWithMetaToDTO(mm *model.MessageWithMeta) dto.MessageResponse {
-	base := h.msgToDTO(mm.Message)
-	// attachments
-	atts := make([]dto.AttachmentResponse, 0, len(mm.Attachments))
-	for _, a := range mm.Attachments {
-		atts = append(atts, dto.AttachmentResponse{
-			ID:            hex.EncodeToString(a.ID),
-			MessageID:     hex.EncodeToString(a.MessageID),
-			FileName:      a.Filename,
-			FileURL:       a.FileURL,
-			MimeType:      a.MimeType,
-			FileSizeBytes: a.FileSizeBytes,
-			Width:         a.Width,
-			Height:        a.Height,
-			DurationSec:   a.DurationSec,
-			CreatedAt:     a.CreatedAt.Format(time.RFC3339),
-		})
-	}
-	// reactions
-	reacts := make([]dto.MessageReactionResponse, 0, len(mm.Reactions))
-	for _, rct := range mm.Reactions {
-		reacts = append(reacts, dto.MessageReactionResponse{
-			ID:        rct.ID,
-			MessageID: hex.EncodeToString(rct.MessageID),
-			UserID:    hex.EncodeToString(rct.UserID),
-			Emoji:     rct.Emoji,
-			CreatedAt: rct.CreatedAt.Format(time.RFC3339),
-		})
-	}
-	base.Attachments = atts
-	base.Reactions = reacts
-	base.SenderName = mm.SenderName
-	base.SenderAvatarURL = mm.SenderAvatarURL
-	return base
 }

@@ -15,7 +15,7 @@ A production-grade Go backend for real-time messaging — featuring email OTP au
 [![WebSocket](https://img.shields.io/badge/WebSocket-Gorilla-5C2D91?style=for-the-badge)](https://github.com/gorilla/websocket)
 [![License](https://img.shields.io/badge/license-TBD-lightgrey?style=for-the-badge)](#license)
 
-> **Status:** Core REST API, WebSocket hub, Redis integrations, MySQL repositories, migrations, and worker infrastructure are complete. Docker, CI, and tests are not yet included.
+> **Status:** Core REST API, WebSocket hub, Redis integrations, MySQL repositories, migrations, worker infrastructure, and Docker configuration are included. Unit/contract tests are maintained locally and are not versioned. CI is not yet configured.
 
 </div>
 
@@ -299,11 +299,45 @@ make run-worker     # Run background worker
 make build          # Compile binary
 make tidy           # go mod tidy
 make lint           # golangci-lint
-go test ./...       # Run tests
+make check          # Go checks; also runs local tests when available
+make test           # Requires the untracked local test/ directory
+go run ./test       # Local test suite without Make (requires test/)
 ```
 
 
 > The Makefile uses POSIX shell syntax. On Windows, use **Git Bash** or **WSL**.
+
+`make check` only invokes Go commands and also works from PowerShell with Go and
+GNU Make on PATH. When `test/main.go` exists, it runs `go vet ./...` and
+`go test ./... -count=1` through the local overlay runner, including the centralized
+unit/contract tests. Otherwise it runs the standard Go commands directly against
+the checkout. A fresh clone contains no unit/contract tests, so this fallback
+checks compilation and vet without providing the local suite's behavioral coverage.
+Existing `make lint` and `make gen_check` remain available for lint and SQL validation.
+
+Test sources, fixtures, and the overlay runner are maintained locally under `test/`.
+Both `test/` and `audit/` are intentionally ignored by Git and are absent from a
+fresh clone. With the local suite available, use `make check`, `make test`, or
+`go run ./test`; plain `go test ./...` does not load those test sources. `make test`
+reports an error when the local suite is unavailable. Local instructions are in
+`test/README.md`. Keep audit reports, probes, and saved results in `audit/`.
+
+Services receive named `AuthDependencies`, `MessageDependencies`,
+`RoomDependencies`, and `UserDependencies`. Each service file groups its dependency
+interfaces, dependency struct, service struct, constructor, and business methods.
+HTTP handlers declare their consumer interfaces in the corresponding handler file.
+Runtime adapters are assembled in `internal/wire/container.go`. Unit tests supply
+fakes without assigning globals.
+`Now` is optional and defaults to `time.Now`; a nil logger defaults to a no-op
+logger. Required stores/sequence/event adapters must be supplied; optional queue
+and cache behavior is documented on the dependency structs.
+
+`internal/presenter` contains pure REST/realtime mapping. Presence is fetched by
+the service and passed to the mapper as data. Local JSON contract fixtures live in
+`test/testdata/internal/handler/testdata` and `test/testdata/internal/service/testdata`; only regenerate them
+with `STELLO_UPDATE_GOLDEN=1` when an intentional contract change has been reviewed.
+Both message-send wrappers delegate to `Send(ctx, SendMessageCommand)` while
+retaining their existing HTTP response shapes and messages.
 
 ---
 
@@ -313,7 +347,7 @@ Before opening a PR:
 
 1. Keep changes focused and scoped
 2. Run `gofmt -w .` and `go mod tidy`
-3. Run `go test ./...` — no regressions
+3. Run `make check` — no regressions
 4. Run `make gen` if SQL queries changed
 5. Add a Goose migration for any schema change
 6. **Never commit** `.env`, YAML configs, logs, or local files

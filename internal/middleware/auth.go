@@ -1,10 +1,10 @@
 package middleware
 
 import (
+	"context"
 	"strings"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
-	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"github.com/gin-gonic/gin"
 )
@@ -17,7 +17,11 @@ const (
 	ContextJTIKey  string = "jti"
 )
 
-func AuthMiddleware(as *s.AuthService) gin.HandlerFunc {
+type tokenValidator interface {
+	ValidateToken(context.Context, string) (*model.User, []byte, error)
+}
+
+func AuthMiddleware(as tokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractTokenFromHeader(c)
 		if token == "" {

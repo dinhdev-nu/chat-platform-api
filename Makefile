@@ -68,6 +68,24 @@ gen_check: ## Verify sqlc queries are valid
 lint: ## Run linter
 	golangci-lint run ./...
 
+.PHONY: check
+check: ## Run Go checks and include the local test suite when available
+ifneq ($(wildcard test/main.go),)
+	go run ./test vet ./...
+	go run ./test test ./... -count=1
+else
+	go vet ./...
+	go test ./... -count=1
+endif
+
+.PHONY: test
+test: ## Run the untracked local unit/contract test suite
+ifneq ($(wildcard test/main.go),)
+	go run ./test test ./... -count=1
+else
+	$(error Local tests are unavailable; test/ is intentionally untracked)
+endif
+
 .PHONY: seed
 seed: ## Run seed data
 	APP_ENV=$(APP_ENV) go run ./cmd/seed/main.go

@@ -5,18 +5,22 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
-	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"go.uber.org/zap"
 )
 
+type tokenLastUsedWriter interface {
+	UpdateLastUsed(ctx context.Context, jti []byte, usedAt time.Time) error
+}
+
 type AuthTokenLastUsedHandler struct {
-	tokenRepo r.UserTokenRepository
+	tokenRepo tokenLastUsedWriter
 	logger    *zap.Logger
 }
 
-func NewAuthTokenLastUsedHandler(tokenRepo r.UserTokenRepository, logger *zap.Logger) queue.Handler {
+func NewAuthTokenLastUsedHandler(tokenRepo tokenLastUsedWriter, logger *zap.Logger) queue.Handler {
 	return &AuthTokenLastUsedHandler{
 		tokenRepo: tokenRepo,
 		logger:    logger,

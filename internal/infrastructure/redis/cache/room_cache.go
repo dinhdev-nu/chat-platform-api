@@ -7,9 +7,12 @@ import (
 	"strconv"
 	"time"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/redis/go-redis/v9"
 )
+
+type RoomCache struct{ client *redis.Client }
+
+func NewRoomCache(client *redis.Client) *RoomCache { return &RoomCache{client: client} }
 
 const (
 	memberCacheKey = "conv:members:%s" // conv:members:{convID} -> set of memberIDs
@@ -23,8 +26,8 @@ func UnreadKey(userID, convID []byte) string {
 	)
 }
 
-func BatchIncrUnread(ctx context.Context, userIDs [][]byte, convID []byte) error {
-	pipe := g.RedisClient.Pipeline()
+func (c *RoomCache) BatchIncrUnread(ctx context.Context, userIDs [][]byte, convID []byte) error {
+	pipe := c.client.Pipeline()
 	for _, mID := range userIDs {
 		pipe.Incr(ctx, UnreadKey(mID, convID))
 	}
@@ -32,13 +35,13 @@ func BatchIncrUnread(ctx context.Context, userIDs [][]byte, convID []byte) error
 	return err
 }
 
-func IncrUnread(ctx context.Context, userID, convID []byte) error {
-	return g.RedisClient.Incr(ctx, UnreadKey(userID, convID)).Err()
+func (c *RoomCache) IncrUnread(ctx context.Context, userID, convID []byte) error {
+	return c.client.Incr(ctx, UnreadKey(userID, convID)).Err()
 }
 
-func GetMembers(ctx context.Context, convID []byte) ([][]byte, error) {
+func (c *RoomCache) GetMembers(ctx context.Context, convID []byte) ([][]byte, error) {
 	key := memberKey(convID)
-	members, err := g.RedisClient.SMembers(ctx, key).Result()
+	members, err := c.client.SMembers(ctx, key).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -57,13 +60,13 @@ func GetMembers(ctx context.Context, convID []byte) ([][]byte, error) {
 	return result, nil
 }
 
-func WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error {
+func (c *RoomCache) WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error {
 	if len(userIDs) == 0 {
 		return nil
 	}
 
 	k := memberKey(convID)
-	pipe := g.RedisClient.Pipeline()
+	pipe := c.client.Pipeline()
 	for _, mID := range userIDs {
 		pipe.SAdd(ctx, k, hex.EncodeToString(mID))
 	}
@@ -72,13 +75,13 @@ func WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error {
 	return err
 }
 
-func RefreshTTL(ctx context.Context, convID []byte) error {
+func (c *RoomCache) RefreshTTL(ctx context.Context, convID []byte) error {
 	key := memberKey(convID)
-	return g.RedisClient.Expire(ctx, key, memberCacheTTL).Err()
+	return c.client.Expire(ctx, key, memberCacheTTL).Err()
 }
 
-func InvalidateMembers(ctx context.Context, convID []byte) error {
-	return g.RedisClient.Del(ctx, memberKey(convID)).Err()
+func (c *RoomCache) InvalidateMembers(ctx context.Context, convID []byte) error {
+	return c.client.Del(ctx, memberKey(convID)).Err()
 }
 
 var addMemberScript = redis.NewScript(`
@@ -105,33 +108,33 @@ var removeMemberScript = redis.NewScript(`
     return 0
 `)
 
-func AddMember(ctx context.Context, convID, userID []byte) error {
-	return addMemberScript.Run(ctx, g.RedisClient,
+func (c *RoomCache) AddMember(ctx context.Context, convID, userID []byte) error {
+	return addMemberScript.Run(ctx, c.client,
 		[]string{memberKey(convID)},
 		hex.EncodeToString(userID),
 		int(memberCacheTTL.Seconds()),
 	).Err()
 }
 
-func RemoveMember(ctx context.Context, convID, userID []byte) error {
-	return removeMemberScript.Run(ctx, g.RedisClient,
+func (c *RoomCache) RemoveMember(ctx context.Context, convID, userID []byte) error {
+	return removeMemberScript.Run(ctx, c.client,
 		[]string{memberKey(convID)},
 		hex.EncodeToString(userID),
 		int(memberCacheTTL.Seconds()),
 	).Err()
 }
 
-func SetUnread(ctx context.Context, userID, convID []byte, count int64) error {
+func (c *RoomCache) SetUnread(ctx context.Context, userID, convID []byte, count int64) error {
 	key := UnreadKey(userID, convID)
-	return g.RedisClient.Set(ctx, key, count, 0).Err()
+	return c.client.Set(ctx, key, count, 0).Err()
 }
 
-func DeleteUnread(ctx context.Context, userID, convID []byte) error {
+func (c *RoomCache) DeleteUnread(ctx context.Context, userID, convID []byte) error {
 	key := UnreadKey(userID, convID)
-	return g.RedisClient.Del(ctx, key).Err()
+	return c.client.Del(ctx, key).Err()
 }
 
-func GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[string]int64, error) {
+func (c *RoomCache) GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[string]int64, error) {
 	if len(convIDs) == 0 {
 		return map[string]int64{}, nil
 	}
@@ -143,7 +146,7 @@ func GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[strin
 		cidHexes[i] = h
 		keys[i] = UnreadKey(userID, cid)
 	}
-	vals, err := g.RedisClient.MGet(ctx, keys...).Result()
+	vals, err := c.client.MGet(ctx, keys...).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -163,16 +166,16 @@ func GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[strin
 	return result, nil
 }
 
-func ResetUnread(ctx context.Context, userID []byte, convID []byte) error {
-	return g.RedisClient.Set(ctx, UnreadKey(userID, convID), 0, 0).Err()
+func (c *RoomCache) ResetUnread(ctx context.Context, userID []byte, convID []byte) error {
+	return c.client.Set(ctx, UnreadKey(userID, convID), 0, 0).Err()
 }
 
-func IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error) {
+func (c *RoomCache) IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error) {
 	key := memberKey(convID)
 	uidHex := hex.EncodeToString(userID)
 
 	// Pipeline EXISTS + SISMEMBER — 1 round-trip duy nhất.
-	pipe := g.RedisClient.Pipeline()
+	pipe := c.client.Pipeline()
 	existsCmd := pipe.Exists(ctx, key)
 	ismemberCmd := pipe.SIsMember(ctx, key, uidHex)
 	if _, err = pipe.Exec(ctx); err != nil {

@@ -11,327 +11,420 @@ import (
 	"time"
 	"unicode/utf8"
 
-	g "github.com/dinhdev-nu/chat-platform-api/global"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
-	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis/cache"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
-	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
+	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
+type ConversationPublisher interface {
+	Publish(context.Context, []byte, redis.Event) error
+}
+
+type SequenceAllocator interface {
+	Next(context.Context, []byte) (uint64, error)
+}
+
+type MessageUsers interface {
+	FindByIDs(ctx context.Context, ids [][]byte) (map[string]*model.User, error)
+	FindByID(ctx context.Context, id []byte) (*model.User, error)
+}
+type MessageRooms interface {
+	UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error
+	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
+	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
+	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
+}
+type MessageStore interface {
+	InsertMessage(ctx context.Context, msg *model.Message) error
+	BatchInsertAttachments(ctx context.Context, args []*model.Attachment) error
+	SoftDeleteMessage(ctx context.Context, id []byte) error
+	ListMessages(ctx context.Context, convID []byte, cursorTS *time.Time, cursorSeq *uint64, limit int32) ([]*model.Message, error)
+	GetAttachmentsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.Attachment, error)
+	GetReactionsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.MessageReaction, error)
+	GetMessageCursorTS(ctx context.Context, msgID, convID []byte) (*time.Time, error)
+	GetUnreadCountByWatermark(ctx context.Context, userID, convID []byte) (int64, error)
+	GetMessageByID(ctx context.Context, id []byte) (*model.Message, error)
+	UpdateMessageContent(ctx context.Context, arg *model.Message) (int64, error)
+	InsertMessageReaction(ctx context.Context, msgID, userID []byte, emoji string) (int64, error)
+	DeleteMessageReaction(ctx context.Context, msgID, userID []byte, emoji string) error
+}
+type MessageCache interface {
+	IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error)
+	GetMembers(ctx context.Context, convID []byte) ([][]byte, error)
+	WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error
+	BatchIncrUnread(ctx context.Context, userIDs [][]byte, convID []byte) error
+	RefreshTTL(ctx context.Context, convID []byte) error
+	SetUnread(ctx context.Context, userID, convID []byte, count int64) error
+	DeleteUnread(ctx context.Context, userID, convID []byte) error
+}
+
+type MessageUserCache interface {
+	GetUsersWithMisses(context.Context, [][]byte) (map[string]*model.User, [][]byte, error)
+	WarmUsers(context.Context, map[string]*model.User) error
+}
+
+// UserCache and Jobs may be nil: use DB reads and synchronous summary fallback.
+// Cache, Sequences and Events are explicit adapters supplied by the caller.
+type MessageDependencies struct {
+	Rooms     MessageRooms
+	Messages  MessageStore
+	Users     MessageUsers
+	Viewer    RoomViewer
+	Cache     MessageCache
+	UserCache MessageUserCache
+	Sequences SequenceAllocator
+	Events    ConversationPublisher
+	Jobs      JobEnqueuer
+	Logger    *zap.Logger
+	Now       func() time.Time
+}
+
 type RoomViewer interface {
 	IsViewing(userID, convID []byte) bool
 }
 
 type MessageService struct {
-	roomRepo r.RoomRepository
-	msgRepo  r.MessageRepository
-	userRepo r.UserRepository
-
+	roomRepo   MessageRooms
+	msgRepo    MessageStore
+	userRepo   MessageUsers
 	roomViewer RoomViewer
+	cache      MessageCache
+	userCache  MessageUserCache
+	sequences  SequenceAllocator
+	events     ConversationPublisher
+	jobs       JobEnqueuer
+	logger     *zap.Logger
+	now        func() time.Time
 }
 
-func NewMessageService(rr r.RoomRepository, mg r.MessageRepository, ur r.UserRepository, rv RoomViewer) *MessageService {
+func NewMessageService(d MessageDependencies) *MessageService {
 	return &MessageService{
-		roomRepo:   rr,
-		msgRepo:    mg,
-		userRepo:   ur,
-		roomViewer: rv,
+		roomRepo:   d.Rooms,
+		msgRepo:    d.Messages,
+		userRepo:   d.Users,
+		roomViewer: d.Viewer,
+		cache:      d.Cache,
+		userCache:  d.UserCache,
+		sequences:  d.Sequences,
+		events:     d.Events,
+		jobs:       d.Jobs,
+		logger:     loggerOrNop(d.Logger),
+		now:        clockOrNow(d.Now),
 	}
 }
 
-func (s *MessageService) SendMessage(
-	ctx context.Context, convID, senderUID []byte,
-	msgType int8, content string, parentID []byte,
-) (*model.Message, error) {
-	if err := s.requireMembership(ctx, convID, senderUID); err != nil {
-		return nil, err
-	}
-
-	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
-	if err != nil {
-		return nil, ae.Internal(err)
-	}
-
-	mID, err := crypto.NewUUIDv7Bytes()
-	if err != nil {
-		return nil, ae.Internal(err)
-	}
-
-	arg := &model.Message{
-		ID:             mID,
-		ConversationID: convID,
-		SenderID:       senderUID,
-		ParentID:       parentID,
-		Type:           model.MessageType(msgType),
-		Content:        &content,
-		Seq:            seqVal,
-	}
-	if err := s.msgRepo.InsertMessage(ctx, arg); err != nil {
-		return nil, ae.Internal(err)
-	}
-	now := time.Now()
-	arg.CreatedAt = now
-	arg.UpdatedAt = now
-
-	s.enqueueConversationLastActivity(ctx, arg.ConversationID, arg.ID, arg.Content, arg.CreatedAt)
-
-	go s.afterSend(ctx, &model.MessageWithMeta{
-		Message:     arg,
-		Attachments: []*model.Attachment{},
-		Reactions:   []*model.MessageReaction{},
-	})
-
-	return arg, nil
+type SendMessageCommand struct {
+	ConversationID []byte
+	SenderID       []byte
+	ParentID       []byte
+	Type           model.MessageType
+	Content        string
+	Attachments    []*model.Attachment
 }
 
-func (s *MessageService) SendMessageWithAttachment(
-	ctx context.Context, convID, senderUID []byte,
-	msgType int8, content string, parentID []byte,
-	attachments []*model.Attachment,
-) (*model.MessageWithMeta, error) {
-	if err := s.requireMembership(ctx, convID, senderUID); err != nil {
-		return nil, err
+// Send is the common use case; the wrappers retain the existing handler contracts.
+func (s *MessageService) Send(ctx context.Context, cmd SendMessageCommand) (*model.MessageWithMeta, error) {
+	if len(cmd.Attachments) == 0 && cmd.Content == "" {
+		return nil, ae.ValidationError("Message content cannot be empty")
 	}
-
-	mID, err := crypto.NewUUIDv7Bytes()
-	if err != nil {
-		return nil, ae.Internal(err)
-	}
-
-	seqVal, err := GetNextSeqFromRedis(ctx, s.msgRepo, convID)
-	if err != nil {
-		return nil, ae.Internal(err)
-	}
-	for _, att := range attachments {
-		if len(att.ID) == 0 {
-			att.ID, err = crypto.NewUUIDv7Bytes()
-			if err != nil {
-				return nil, ae.Internal(err)
-			}
+	for _, attachment := range cmd.Attachments {
+		if attachment == nil {
+			return nil, ae.ValidationError("Attachment cannot be null")
 		}
-		att.MessageID = mID
 	}
-	arg := &model.Message{
-		ID:             mID,
-		ConversationID: convID,
-		SenderID:       senderUID,
-		ParentID:       parentID,
-		Type:           model.MessageType(msgType),
-		Content:        &content,
-		Seq:            seqVal,
+	if err := s.requireMembership(ctx, cmd.ConversationID, cmd.SenderID); err != nil {
+		return nil, err
 	}
-
-	if err := s.msgRepo.InsertMessage(ctx, arg); err != nil {
+	seq, err := s.sequences.Next(ctx, cmd.ConversationID)
+	if err != nil {
 		return nil, ae.Internal(err)
 	}
+	id, err := crypto.NewUUIDv7Bytes()
+	if err != nil {
+		return nil, ae.Internal(err)
+	}
+	msg := &model.Message{
+		ID:             id,
+		ConversationID: cmd.ConversationID,
+		SenderID:       cmd.SenderID,
+		ParentID:       cmd.ParentID,
+		Type:           cmd.Type,
+		Content:        &cmd.Content,
+		Seq:            seq,
+	}
+	if err := prepareAttachments(msg.ID, cmd.Attachments); err != nil {
+		return nil, ae.Internal(err)
+	}
+	if err := s.persistMessage(ctx, msg, cmd.Attachments); err != nil {
+		return nil, err
+	}
 
+	now := s.now()
+	msg.CreatedAt, msg.UpdatedAt = now, now
+	for _, attachment := range cmd.Attachments {
+		attachment.CreatedAt = now
+	}
+	result := &model.MessageWithMeta{Message: msg, Attachments: cmd.Attachments, Reactions: []*model.MessageReaction{}}
+	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content, msg.CreatedAt)
+	// afterSend enriches sender metadata; it must not mutate the returned metadata.
+	outgoing := *result
+	go s.afterSend(ctx, &outgoing)
+	return result, nil
+}
+
+func (s *MessageService) SendMessage(ctx context.Context, convID, senderID []byte, msgType int8, content string, parentID []byte) (*model.Message, error) {
+	result, err := s.Send(ctx, SendMessageCommand{
+		ConversationID: convID,
+		SenderID:       senderID,
+		ParentID:       parentID,
+		Type:           model.MessageType(msgType),
+		Content:        content,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Message, nil
+}
+
+func (s *MessageService) SendMessageWithAttachment(ctx context.Context, convID, senderID []byte, msgType int8, content string, parentID []byte, attachments []*model.Attachment) (*model.MessageWithMeta, error) {
+	return s.Send(ctx, SendMessageCommand{
+		ConversationID: convID,
+		SenderID:       senderID,
+		ParentID:       parentID,
+		Type:           model.MessageType(msgType),
+		Content:        content,
+		Attachments:    attachments,
+	})
+}
+
+func prepareAttachments(messageID []byte, attachments []*model.Attachment) error {
+	for _, attachment := range attachments {
+		if len(attachment.ID) == 0 {
+			id, err := crypto.NewUUIDv7Bytes()
+			if err != nil {
+				return err
+			}
+			attachment.ID = id
+		}
+		attachment.MessageID = messageID
+	}
+	return nil
+}
+
+func (s *MessageService) persistMessage(ctx context.Context, msg *model.Message, attachments []*model.Attachment) error {
+	if err := s.msgRepo.InsertMessage(ctx, msg); err != nil {
+		return ae.Internal(err)
+	}
+	if len(attachments) == 0 {
+		return nil
+	}
 	if err := s.msgRepo.BatchInsertAttachments(ctx, attachments); err != nil {
 		cleanupCtx, cancel := detachedContext(ctx, sideEffectTimeout)
 		defer cancel()
-		if cleanupErr := s.msgRepo.SoftDeleteMessage(cleanupCtx, mID); cleanupErr != nil {
-			g.Logger.Error("messageService.SendMessageWithAttachment: failed to roll back message",
-				zap.String("msg_id", hex.EncodeToString(mID)),
-				zap.Error(cleanupErr),
-			)
+		if cleanupErr := s.msgRepo.SoftDeleteMessage(cleanupCtx, msg.ID); cleanupErr != nil {
+			s.logger.Error("messageService.SendMessageWithAttachment: failed to roll back message",
+				zap.String("msg_id", hex.EncodeToString(msg.ID)), zap.Error(cleanupErr))
 		}
-		return nil, ae.Internal(err)
+		return ae.Internal(err)
 	}
+	return nil
+}
 
-	now := time.Now()
-	arg.CreatedAt = now
-	arg.UpdatedAt = now
-	for _, att := range attachments {
-		att.CreatedAt = now
-	}
-
-	s.enqueueConversationLastActivity(ctx, arg.ConversationID, arg.ID, arg.Content, arg.CreatedAt)
-
-	msgWithMeta := &model.MessageWithMeta{
-		Message:     arg,
-		Attachments: attachments,
-		Reactions:   []*model.MessageReaction{},
-	}
-	asyncMessage := *msgWithMeta
-	go s.afterSend(ctx, &asyncMessage)
-
-	return msgWithMeta, nil
+type messagePage struct {
+	rows    []*model.Message
+	limit   int
+	hasMore bool
+}
+type messageRelationIDs struct{ messages, attachments, senders [][]byte }
+type messageRelations struct {
+	attachments []*model.Attachment
+	reactions   []*model.MessageReaction
+	users       map[string]*model.User
 }
 
 func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, cursor *string, limit int) (*ResultPage[*model.MessageWithMeta], error) {
 	if err := s.requireMembership(ctx, convID, uid); err != nil {
 		return nil, err
 	}
-
-	const maxLimit = 50
-	if limit <= 0 || limit > maxLimit {
-		limit = maxLimit
+	page, err := s.readMessagePage(ctx, convID, cursor, limit)
+	if err != nil {
+		return nil, err
 	}
-	fetch := limit + 1
+	if len(page.rows) == 0 {
+		return assembleMessagePage(page, messageRelations{}), nil
+	}
+	relations, err := s.loadMessageRelations(ctx, indexMessageRelations(page.rows))
+	if err != nil {
+		return nil, ae.Internal(err)
+	}
+	return assembleMessagePage(page, relations), nil
+}
 
+func (s *MessageService) readMessagePage(ctx context.Context, convID []byte, cursor *string, limit int) (messagePage, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
 	var cursorTS *time.Time
 	var cursorSeq *uint64
 	if cursor != nil && *cursor != "" {
 		ts, seq, err := decodeMsgCursor(*cursor)
 		if err != nil {
-			return nil, ae.BadRequest("Invalid cursor format")
+			return messagePage{}, ae.BadRequest("Invalid cursor format")
 		}
 		cursorTS, cursorSeq = &ts, &seq
 	}
-
-	// 1. Get messages from DB
-	rows, err := s.msgRepo.ListMessages(ctx, convID, cursorTS, cursorSeq, int32(fetch))
+	rows, err := s.msgRepo.ListMessages(ctx, convID, cursorTS, cursorSeq, int32(limit+1))
 	if err != nil {
-		return nil, ae.Internal(err)
+		return messagePage{}, ae.Internal(err)
 	}
-
-	hasMore := len(rows) == fetch
-	if hasMore {
-		rows = rows[:limit]
+	page := messagePage{rows: rows, limit: limit, hasMore: len(rows) == limit+1}
+	if page.hasMore {
+		page.rows = rows[:limit]
 	}
+	return page, nil
+}
 
-	if len(rows) == 0 {
-		return &ResultPage[*model.MessageWithMeta]{Items: []*model.MessageWithMeta{}, Limit: limit}, nil
-	}
-
-	// Pre-allocate
-	msgIDs := make([][]byte, len(rows))
-	msgAttIDs := make([][]byte, 0, len(rows))
-	msgResult := make([]*model.MessageWithMeta, len(rows))
-	msgMap := make(map[string]*model.MessageWithMeta, len(rows))
-
-	seenSenders := make(map[string]struct{}, len(rows))
-	senderIDs := make([][]byte, 0, len(rows))
-
-	for i, m := range rows {
-		msgIDs[i] = m.ID
-
-		// Deduplicate sender IDs trước khi truyền xuống cache layer
-		if len(m.SenderID) > 0 {
-			if k := string(m.SenderID); k != "" {
-				if _, ok := seenSenders[k]; !ok {
-					seenSenders[k] = struct{}{}
-					senderIDs = append(senderIDs, m.SenderID)
-				}
+// Index only the returned page; the lookahead row must not trigger enrichment.
+func indexMessageRelations(rows []*model.Message) messageRelationIDs {
+	ids := messageRelationIDs{messages: make([][]byte, 0, len(rows))}
+	senders := make(map[string]struct{}, len(rows))
+	for _, msg := range rows {
+		ids.messages = append(ids.messages, msg.ID)
+		if len(msg.SenderID) > 0 {
+			key := string(msg.SenderID)
+			if _, seen := senders[key]; !seen {
+				senders[key] = struct{}{}
+				ids.senders = append(ids.senders, msg.SenderID)
 			}
 		}
-
-		// Chỉ fetch attachment cho các message type có thể có file
-		switch m.Type {
-		case model.MessageTypeText, model.MessageTypeSystem:
-
-		default:
-			msgAttIDs = append(msgAttIDs, m.ID)
+		if msg.Type != model.MessageTypeText && msg.Type != model.MessageTypeSystem {
+			ids.attachments = append(ids.attachments, msg.ID)
 		}
-
-		meta := &model.MessageWithMeta{
-			Message:     m,
-			Attachments: []*model.Attachment{},
-			Reactions:   []*model.MessageReaction{},
-		}
-		msgResult[i] = meta
-		msgMap[string(m.ID)] = meta
 	}
+	return ids
+}
 
-	// 2. Parallel fetch using errgroup
-	eg, gCtx := errgroup.WithContext(ctx)
-
-	var atts []*model.Attachment
-	if len(msgAttIDs) > 0 {
-		eg.Go(func() error {
+func (s *MessageService) loadMessageRelations(ctx context.Context, ids messageRelationIDs) (messageRelations, error) {
+	var related messageRelations
+	group, readCtx := errgroup.WithContext(ctx)
+	if len(ids.attachments) > 0 {
+		group.Go(func() error {
 			var err error
-			atts, err = s.msgRepo.GetAttachmentsByMessageIDs(gCtx, msgAttIDs) // chỉ query IDs có attachment
+			related.attachments, err = s.msgRepo.GetAttachmentsByMessageIDs(readCtx, ids.attachments)
 			return err
 		})
 	}
-
-	var reactions []*model.MessageReaction
-	eg.Go(func() error {
+	group.Go(func() error {
 		var err error
-		reactions, err = s.msgRepo.GetReactionsByMessageIDs(gCtx, msgIDs) // tất cả message đều có thể có reaction
+		related.reactions, err = s.msgRepo.GetReactionsByMessageIDs(readCtx, ids.messages)
 		return err
 	})
-
-	var users map[string]*model.User
-	eg.Go(func() error {
-		users = make(map[string]*model.User, len(senderIDs))
-		missingIDs := senderIDs
-
-		if g.Session != nil {
-			cachedUsers, misses, err := g.Session.GetUsersWithMisses(gCtx, senderIDs)
-			if err == nil {
-				users = cachedUsers
-				missingIDs = misses
-			} else {
-				g.Logger.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
-			}
-		}
-
-		if len(missingIDs) == 0 {
-			return nil
-		}
-
-		dbUsers, err := s.userRepo.FindByIDs(gCtx, missingIDs)
-		if err != nil {
-			return err
-		}
-		for k, user := range dbUsers {
-			users[k] = user
-		}
-
-		if g.Session != nil && len(dbUsers) > 0 {
-			go func(parent context.Context, users map[string]*model.User) {
-				warmCtx, cancel := detachedContext(parent, cacheTaskTimeout)
-				defer cancel()
-				if err := g.Session.WarmUsers(warmCtx, users); err != nil {
-					g.Logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
-				}
-			}(ctx, dbUsers)
-		}
-
-		return nil
+	group.Go(func() error {
+		var err error
+		related.users, err = s.loadSenders(readCtx, ctx, ids.senders)
+		return err
 	})
+	err := group.Wait()
+	return related, err
+}
 
-	if err := eg.Wait(); err != nil {
-		return nil, ae.Internal(err)
-	}
-
-	// 3. Mapping data — O(N)
-	for _, att := range atts {
-		if meta, exists := msgMap[string(att.MessageID)]; exists {
-			meta.Attachments = append(meta.Attachments, att)
+func (s *MessageService) loadSenders(ctx, requestCtx context.Context, ids [][]byte) (map[string]*model.User, error) {
+	users := make(map[string]*model.User, len(ids))
+	missing := ids
+	if s.userCache != nil {
+		cached, misses, err := s.userCache.GetUsersWithMisses(ctx, ids)
+		if err != nil {
+			s.logger.Warn("messageService.ListMessages: user cache unavailable", zap.Error(err))
+		} else {
+			for key, user := range cached {
+				users[key] = user
+			}
+			missing = misses
 		}
 	}
-	for _, react := range reactions {
-		if meta, exists := msgMap[string(react.MessageID)]; exists {
-			meta.Reactions = append(meta.Reactions, react)
-		}
+	if len(missing) == 0 {
+		return users, nil
 	}
-	for _, meta := range msgResult {
-		if user, exists := users[string(meta.SenderID)]; exists {
+	fromDB, err := s.userRepo.FindByIDs(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+	for key, user := range fromDB {
+		users[key] = user
+	}
+	if s.userCache != nil && len(fromDB) > 0 {
+		go s.warmSenders(requestCtx, fromDB)
+	}
+	return users, nil
+}
+
+func (s *MessageService) warmSenders(parent context.Context, users map[string]*model.User) {
+	ctx, cancel := detachedContext(parent, cacheTaskTimeout)
+	defer cancel()
+	if err := s.userCache.WarmUsers(ctx, users); err != nil {
+		s.logger.Warn("messageService.ListMessages: failed to warm user cache", zap.Error(err))
+	}
+}
+
+// Pure assembly preserves DB ordering and non-nil collections without further I/O.
+func assembleMessagePage(page messagePage, related messageRelations) *ResultPage[*model.MessageWithMeta] {
+	out := &ResultPage[*model.MessageWithMeta]{Items: make([]*model.MessageWithMeta, 0, len(page.rows)), Limit: page.limit, HasMore: page.hasMore}
+	byID := make(map[string]*model.MessageWithMeta, len(page.rows))
+	for _, msg := range page.rows {
+		meta := &model.MessageWithMeta{Message: msg, Attachments: []*model.Attachment{}, Reactions: []*model.MessageReaction{}}
+		if user := related.users[string(msg.SenderID)]; user != nil {
 			meta.SenderName = user.Username
 			meta.SenderAvatarURL = user.AvatarURL
 		}
+		out.Items = append(out.Items, meta)
+		byID[string(msg.ID)] = meta
 	}
-
-	// 4. Build next cursor
-	var nextCursor *string
-	if hasMore {
-		last := rows[len(rows)-1]
-		s := encodeMsgCursor(last.CreatedAt, last.Seq)
-		nextCursor = &s
+	for _, att := range related.attachments {
+		if meta := byID[string(att.MessageID)]; meta != nil {
+			meta.Attachments = append(meta.Attachments, att)
+		}
 	}
+	for _, reaction := range related.reactions {
+		if meta := byID[string(reaction.MessageID)]; meta != nil {
+			meta.Reactions = append(meta.Reactions, reaction)
+		}
+	}
+	if page.hasMore && len(page.rows) > 0 {
+		last := page.rows[len(page.rows)-1]
+		cursor := encodeMsgCursor(last.CreatedAt, last.Seq)
+		out.NextCursor = &cursor
+	}
+	return out
+}
 
-	return &ResultPage[*model.MessageWithMeta]{
-		Items:      msgResult,
-		NextCursor: nextCursor,
-		HasMore:    hasMore,
-		Limit:      limit,
-	}, nil
+func decodeMsgCursor(cursor string) (time.Time, uint64, error) {
+	raw, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	parts := strings.SplitN(string(raw), ":", 2)
+	if len(parts) != 2 {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor format")
+	}
+	ms, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	seq, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	return time.UnixMilli(ms), seq, nil
+}
+
+func encodeMsgCursor(ts time.Time, seq uint64) string {
+	raw := fmt.Sprintf("%d:%d", ts.UnixMilli(), seq)
+	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
 func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error {
@@ -352,17 +445,17 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 	}
 	unread, err := s.msgRepo.GetUnreadCountByWatermark(ctx, userID, convID)
 	if err != nil {
-		_ = cache.DeleteUnread(ctx, userID, convID)
+		_ = s.cache.DeleteUnread(ctx, userID, convID)
 	} else {
-		_ = cache.SetUnread(ctx, userID, convID, unread)
+		_ = s.cache.SetUnread(ctx, userID, convID, unread)
 	}
 
-	raw := messageReadPayload(convID, userID, lastReadMsgID, time.Now())
+	raw := presenter.MessageReadPayload(convID, userID, lastReadMsgID, s.now())
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload")
+		s.logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload")
 		return nil
 	}
-	_ = g.PubSub.Publish(ctx, convID, redis.Event{
+	_ = s.events.Publish(ctx, convID, redis.Event{
 		Type:    redis.EventReadMessage,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: raw,
@@ -393,7 +486,7 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.New(ae.ErrCannotEditMessage, "Only text messages can be edited")
 	}
 	msg.Content = &newContent
-	msg.UpdatedAt = time.Now()
+	msg.UpdatedAt = s.now()
 	msg.IsEdited = true
 	affected, err := s.msgRepo.UpdateMessageContent(ctx, msg)
 	if err != nil {
@@ -406,12 +499,12 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content, msg.UpdatedAt)
 
 	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
-	raw := messageEditedPayload(msg, sender)
+	raw := presenter.MessageEditedPayload(msg, sender)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.EditMessage: failed to marshal pubsub payload")
+		s.logger.Error("messageService.EditMessage: failed to marshal pubsub payload")
 		return msg, nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+	_ = s.events.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventEditMessage,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
@@ -449,14 +542,14 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 	}
 
 	msgText := "Message deleted"
-	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, &msgText, time.Now())
+	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, &msgText, s.now())
 
-	raw := messageDeletedPayload(msg.ConversationID, msgID, time.Now())
+	raw := presenter.MessageDeletedPayload(msg.ConversationID, msgID, s.now())
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload")
+		s.logger.Error("messageService.DeleteMessage: failed to marshal pubsub payload")
 		return nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+	_ = s.events.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventDelMessage,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
@@ -501,43 +594,18 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 		action = "removed"
 	}
 
-	raw := reactionTogglePayload(msg.ConversationID, msgID, userID, emoji, action)
+	raw := presenter.ReactionTogglePayload(msg.ConversationID, msgID, userID, emoji, action)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload")
+		s.logger.Error("messageService.ToggleReaction: failed to marshal pubsub payload")
 		return action, nil
 	}
-	_ = g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+	_ = s.events.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventToggleReaction,
 		ConvID:  hex.EncodeToString(msg.ConversationID),
 		Payload: raw,
 	})
 
 	return action, nil
-}
-
-func decodeMsgCursor(cursor string) (time.Time, uint64, error) {
-	raw, err := base64.StdEncoding.DecodeString(cursor)
-	if err != nil {
-		return time.Time{}, 0, err
-	}
-	parts := strings.SplitN(string(raw), ":", 2)
-	if len(parts) != 2 {
-		return time.Time{}, 0, fmt.Errorf("invalid cursor format")
-	}
-	ms, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return time.Time{}, 0, err
-	}
-	seq, err := strconv.ParseUint(parts[1], 10, 64)
-	if err != nil {
-		return time.Time{}, 0, err
-	}
-	return time.UnixMilli(ms), seq, nil
-}
-
-func encodeMsgCursor(ts time.Time, seq uint64) string {
-	raw := fmt.Sprintf("%d:%d", ts.UnixMilli(), seq)
-	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
 func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.MessageWithMeta) {
@@ -550,23 +618,23 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 
 	// Fan-out to members (pubsub)
 	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to load sender", zap.Error(err))
+		s.logger.Warn("messageService.afterSend: failed to load sender", zap.Error(err))
 	} else if sender != nil {
 		msgWithMeta.SenderName = sender.Username
 		msgWithMeta.SenderAvatarURL = sender.AvatarURL
 	}
-	raw := messageNewPayload(msgWithMeta)
+	raw := presenter.MessageNewPayload(msgWithMeta)
 	if len(raw) == 0 {
-		g.Logger.Error("messageService.afterSend: failed to marshal pubsub payload",
+		s.logger.Error("messageService.afterSend: failed to marshal pubsub payload",
 			zap.String("msg_id", hex.EncodeToString(msg.ID)))
 		return
 	}
-	if err := g.PubSub.Publish(ctx, msg.ConversationID, redis.Event{
+	if err := s.events.Publish(ctx, msg.ConversationID, redis.Event{
 		Type:    redis.EventNewMessage,
 		ConvID:  convHex,
 		Payload: raw,
 	}); err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to publish message",
+		s.logger.Warn("messageService.afterSend: failed to publish message",
 			zap.String("msg_id", hex.EncodeToString(msg.ID)),
 			zap.Error(err),
 		)
@@ -576,7 +644,7 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
 	allOffMembers := make([][]byte, 0)
 	if err != nil {
-		g.Logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
+		s.logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
 	} else {
 		for _, mID := range members {
 			if hex.EncodeToString(mID) == senderHex {
@@ -589,19 +657,19 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 		}
 	}
 	if len(allOffMembers) > 0 {
-		if err := cache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
-			g.Logger.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
+		if err := s.cache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
+			s.logger.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
 		} else if cacheHit {
-			if err := cache.RefreshTTL(ctx, msg.ConversationID); err != nil {
-				g.Logger.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
+			if err := s.cache.RefreshTTL(ctx, msg.ConversationID); err != nil {
+				s.logger.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
 			}
 		}
 	}
 
 	// The whole afterSend workflow is already asynchronous.
 	if err == nil && !cacheHit && len(members) > 0 {
-		if err := cache.WarmMember(ctx, msg.ConversationID, members); err != nil {
-			g.Logger.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
+		if err := s.cache.WarmMember(ctx, msg.ConversationID, members); err != nil {
+			s.logger.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
 		}
 	}
 }
@@ -613,8 +681,8 @@ func (s *MessageService) enqueueConversationLastActivity(parent context.Context,
 		MessageText:    text,
 		ActivityAt:     activityAt,
 	}
-	if g.Stream == nil {
-		g.Logger.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
+	if s.jobs == nil {
+		s.logger.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 		)
@@ -623,10 +691,10 @@ func (s *MessageService) enqueueConversationLastActivity(parent context.Context,
 	}
 
 	enqueueCtx, cancel := detachedContext(parent, streamEnqueueTimeout)
-	err := g.Stream.EnqueueJob(enqueueCtx, queue.JobUpdateConversationLastActivity, payload)
+	err := s.jobs.EnqueueJob(enqueueCtx, queue.JobUpdateConversationLastActivity, payload)
 	cancel()
 	if err != nil {
-		g.Logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
+		s.logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(err),
@@ -644,7 +712,7 @@ func (s *MessageService) updateConversationLastActivityFallback(
 	fallbackCtx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 	if fallbackErr := s.roomRepo.UpdateConversationLastActivity(fallbackCtx, convID, msgID, text, activityAt); fallbackErr != nil {
-		g.Logger.Error("messageService: sync fallback update last activity failed",
+		s.logger.Error("messageService: sync fallback update last activity failed",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.String("msg_id", hex.EncodeToString(msgID)),
 			zap.Error(fallbackErr),
@@ -653,12 +721,12 @@ func (s *MessageService) updateConversationLastActivityFallback(
 }
 
 func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
-	members, err := cache.GetMembers(ctx, convID)
+	members, err := s.cache.GetMembers(ctx, convID)
 	if err == nil && len(members) > 0 {
 		return members, true, nil
 	}
 	if err != nil {
-		g.Logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
+		s.logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
 	}
 
 	members, err = s.roomRepo.GetConversationMemberIDs(ctx, convID)
@@ -669,7 +737,7 @@ func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([
 }
 
 func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
-	isMember, hit, err := cache.IsMember(ctx, convID, senderUID)
+	isMember, hit, err := s.cache.IsMember(ctx, convID, senderUID)
 	if err == nil && hit {
 		if isMember {
 			return nil

@@ -5,18 +5,22 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
-	r "github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"go.uber.org/zap"
 )
 
+type userLastSeenWriter interface {
+	UpdateLastSeenAt(ctx context.Context, userID []byte, seenAt time.Time) error
+}
+
 type UserLastSeenHandler struct {
-	userRepo r.UserRepository
+	userRepo userLastSeenWriter
 	logger   *zap.Logger
 }
 
-func NewUserLastSeenHandler(userRepo r.UserRepository, logger *zap.Logger) queue.Handler {
+func NewUserLastSeenHandler(userRepo userLastSeenWriter, logger *zap.Logger) queue.Handler {
 	return &UserLastSeenHandler{
 		userRepo: userRepo,
 		logger:   logger,

@@ -1,13 +1,13 @@
 package handler
 
 import (
-	"encoding/hex"
+	"context"
 	"strconv"
-	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
 	m "github.com/dinhdev-nu/chat-platform-api/internal/middleware"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
+	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
 	s "github.com/dinhdev-nu/chat-platform-api/internal/service"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
@@ -15,11 +15,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type RoomHandler struct {
-	rs *s.RoomService
+type roomService interface {
+	CreateDM(ctx context.Context, currentUID, targetUserID []byte) (*model.Conversation, bool, error)
+	CreateGroup(ctx context.Context, currentUID []byte, req dto.CreateGroupRequest) (*model.Conversation, error)
+	ListConversations(ctx context.Context, uid []byte, cursor *string, limit int) (*s.ResultPage[*model.ConversationListRow], error)
+	AddMember(ctx context.Context, convUID, actorUID, targetUID []byte, actorName string) error
+	RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte, actorName string) error
 }
 
-func NewRoomHandler(rs *s.RoomService) *RoomHandler {
+type RoomHandler struct {
+	rs roomService
+}
+
+func NewRoomHandler(rs roomService) *RoomHandler {
 	return &RoomHandler{rs: rs}
 }
 
@@ -40,11 +48,11 @@ func (h *RoomHandler) CreateDM(c *gin.Context) {
 		return
 	}
 	if exists {
-		res := convToCreateDTO(conv)
+		res := presenter.CreateRoom(conv)
 		r.OK(c, &res, "DM conversation already exists")
 		return
 	}
-	res := convToCreateDTO(conv)
+	res := presenter.CreateRoom(conv)
 	r.Created(c, &res, "DM conversation created successfully")
 }
 
@@ -64,7 +72,7 @@ func (h *RoomHandler) CreateGroup(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
-	res := convToCreateDTO(conv)
+	res := presenter.CreateRoom(conv)
 	r.Created(c, &res, "Group conversation created successfully")
 }
 
@@ -89,7 +97,7 @@ func (h *RoomHandler) ListConversations(c *gin.Context) {
 	// Map model list to DTO list
 	items := make([]dto.ConversationListItem, 0, len(convs.Items))
 	for _, row := range convs.Items {
-		items = append(items, convRowToListDTO(row))
+		items = append(items, presenter.ConversationRow(row))
 	}
 	r.Paginated(c, &items, &r.Pagination{
 		Limit:      limit,
@@ -144,78 +152,4 @@ func (h *RoomHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 	r.NoContent(c)
-}
-
-func convToCreateDTO(c *model.Conversation) dto.CreateRoomResponse {
-	var name, desc, avatar, createdBy, lastMsg, lastAct *string
-
-	// Name: nil or pointer
-	if c.Name != nil {
-		name = c.Name
-	}
-
-	// Description: nil or pointer
-	if c.Description != nil {
-		desc = c.Description
-	}
-
-	// AvatarURL: nil or pointer
-	if c.AvatarURL != nil {
-		avatar = c.AvatarURL
-	}
-
-	// CreatedBy: nil if empty, else pointer to hex string
-	if len(c.CreatedBy) > 0 {
-		cbStr := hex.EncodeToString(c.CreatedBy)
-		createdBy = &cbStr
-	}
-
-	// LastMessageID: nil if empty, else pointer to hex string
-	if len(c.LastMessageID) > 0 {
-		lmStr := hex.EncodeToString(c.LastMessageID)
-		lastMsg = &lmStr
-	}
-
-	// LastActivityAt: nil or pointer to RFC3339 string
-	if c.LastActivityAt != nil {
-		laStr := c.LastActivityAt.Format(time.RFC3339)
-		lastAct = &laStr
-	}
-
-	return dto.CreateRoomResponse{
-		ID:              hex.EncodeToString(c.ID),
-		Type:            int8(c.Type),
-		Name:            name,
-		Description:     desc,
-		AvatarURL:       avatar,
-		CreateBy:        createdBy,
-		LastMessageID:   lastMsg,
-		LastMessageText: c.LastMessageText,
-		LastActivityAt:  lastAct,
-		CreatedAt:       c.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:       c.UpdatedAt.Format(time.RFC3339),
-	}
-}
-
-func convRowToListDTO(rw *model.ConversationListRow) dto.ConversationListItem {
-	c := rw.Conversation
-	base := convToCreateDTO(&c)
-	return dto.ConversationListItem{
-		ID:                base.ID,
-		Type:              base.Type,
-		Name:              base.Name,
-		Description:       base.Description,
-		AvatarURL:         base.AvatarURL,
-		CreateBy:          base.CreateBy,
-		LastMessageID:     base.LastMessageID,
-		LastMessageText:   base.LastMessageText,
-		LastActivityAt:    base.LastActivityAt,
-		CreatedAt:         base.CreatedAt,
-		UpdatedAt:         base.UpdatedAt,
-		Role:              int8(rw.Role),
-		IsMuted:           rw.IsMuted,
-		UnreadCount:       rw.UnreadCount,
-		MemberOnlineCount: rw.MemberOnlineCount,
-		IsOnline:          rw.IsOnline,
-	}
 }
