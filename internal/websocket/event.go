@@ -88,5 +88,4 @@ type OutboundEvent struct {
 func notifyChannel(convID []byte) string     { return "notify:" + hex.EncodeToString(convID) }
 func notifyChannelHex(cidHex string) string  { return "notify:" + cidHex }
 func sysChannel(uidHex string) string        { return "sys:" + uidHex }
-func presenceKey(uidHex string) string       { return "presence:" + uidHex }
 func typingKey(cidHex, uidHex string) string { return fmt.Sprintf("typing:%s:%s", cidHex, uidHex) }

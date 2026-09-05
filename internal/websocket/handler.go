@@ -78,7 +78,7 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		return
 	}
 	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
-	becameOnline := true
+	becameOnline := false
 	// SET presence via centralized PresenceStore
 	presenceCtx, cancelPresence := context.WithTimeout(ctx, redisOperationTimeout)
 
@@ -93,19 +93,9 @@ func (h *Handler) ServeWS(c *gin.Context) {
 			)
 		}
 	} else {
-		// fallback to previous behaviour if Presence store not initialized
-		uidHex := hex.EncodeToString(user.ID)
-		if err := h.hub.rdb.Set(
-			presenceCtx,
-			presenceKey(uidHex), 1,
-			3*pingPeriod,
-		).Err(); err != nil {
-			becameOnline = false
-			h.log.Warn("failed to set fallback user online",
-				zap.String("user_id", uidHex),
-				zap.Error(err),
-			)
-		}
+		h.log.Warn("presence store unavailable",
+			zap.String("user_id", hex.EncodeToString(user.ID)),
+		)
 	}
 	// Tạo client mới và đăng ký vào hub
 	cancelPresence()

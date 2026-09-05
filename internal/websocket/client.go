@@ -177,13 +177,6 @@ func (c *Client) readPump() {
 			if err != nil {
 				c.log.Warn("ws presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
 			}
-		} else {
-			ctx, cancel := c.hub.redisContext()
-			err := c.rdb.Expire(ctx, presenceKey(c.uidHex), 3*pingPeriod).Err()
-			cancel()
-			if err != nil {
-				c.log.Warn("ws fallback presence heartbeat failed", zap.String("uid", c.uidHex), zap.Error(err))
-			}
 		}
 		c.rm.HeartbeatSession(c.uid, c.ConnID)
 		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
