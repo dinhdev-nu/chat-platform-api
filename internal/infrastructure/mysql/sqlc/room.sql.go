@@ -413,7 +413,7 @@ type UpdateConversationLastActivityParams struct {
 	LastActivityAt_2 *time.Time
 }
 
-// Gọi bởi Kafka worker async sau khi gửi tin nhắn.
+// Updated by the Redis Streams worker, or synchronously by the service fallback.
 func (q *Queries) UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error {
 	_, err := q.db.ExecContext(ctx, updateConversationLastActivity,
 		arg.LastMessageID,

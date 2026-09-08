@@ -5,7 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterMessageRouters(
+func RegisterMessageRoutes(
 	r *gin.RouterGroup,
 	rp *gin.RouterGroup,
 	mh *h.MessageHandler,
@@ -20,9 +20,9 @@ func RegisterMessageRouters(
 	}
 	msgs := rp.Group("/messages")
 	{
-		msgs.PUT("/:id", mh.EditMessage)               // sửa tin nhắn (24h)
-		msgs.DELETE("/:id", mh.DeleteMessage)          // xóa mềm
-		msgs.POST("/:id/reactions", mh.ToggleReaction) // t
+		msgs.PUT("/:id", mh.EditMessage)      // sửa tin nhắn (24h)
+		msgs.DELETE("/:id", mh.DeleteMessage) // xóa mềm
+		msgs.POST("/:id/reactions", mh.ToggleReaction)
 	}
 
 }

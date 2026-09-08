@@ -54,7 +54,8 @@ func (s *StreamStore) EnqueueJob(ctx context.Context, jobType string, payload an
 
 // Consumer Group setup
 func (s *StreamStore) EnsureConsumerGroup(ctx context.Context, stream, group string) error {
-	err := s.client.XGroupCreateMkStream(ctx, stream, group, "0").Err() // "O" để tạo consumer group từ đầu stream , "$" để tạo từ cuối stream
+	// Bắt đầu từ ID "0" để đọc cả các job đã có trong stream.
+	err := s.client.XGroupCreateMkStream(ctx, stream, group, "0").Err()
 	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return fmt.Errorf("ensure consumer group [%s/%s]: %w", stream, group, err)
 	}

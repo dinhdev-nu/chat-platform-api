@@ -20,8 +20,8 @@ func InitMySQL() {
 		panic(fmt.Errorf("failed to run MySQL migrations: %w", err))
 	}
 
-	// Sqlc + Goose dùng chung connection pool của GORM
-	// Goose Migrations sử dụng Makefile để chạy không cần Viết AutoMigrate ở đây nữa
+	// Repositories using sqlc share GORM's connection pool.
+	// Chat table migrations run separately through Goose; GORM tables migrate above.
 	global.MySQLDB = db
 	global.SqlDB = sqlDB
 	fmt.Println("MySQL initialized successfully")

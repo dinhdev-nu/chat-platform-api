@@ -483,9 +483,9 @@ func decodeDomainEvent(payload []byte) (DomainEvent, bool) {
 	}, true
 }
 
-func (h *Hub) handleSysEvent(chanel string, payload []byte) {
-	uidhex := strings.TrimPrefix(chanel, "sys:")
-	sessions := h.sessionsForUser(uidhex)
+func (h *Hub) handleSysEvent(channel string, payload []byte) {
+	uidHex := strings.TrimPrefix(channel, "sys:")
+	sessions := h.sessionsForUser(uidHex)
 
 	if len(sessions) == 0 {
 		return

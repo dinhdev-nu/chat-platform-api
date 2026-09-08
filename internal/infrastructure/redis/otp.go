@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	otpKey         string = "otp:%s"          // s = phone number
-	otpAttemptsKey string = "otp:attempts:%s" // s = phone number
-	otpLockKey     string = "otp:lock:%s"     // s = phone number
-	otpResendKey   string = "otp:resend:%s"   // s = phone number
+	otpKey         string = "otp:%s"          // s = email address
+	otpAttemptsKey string = "otp:attempts:%s" // s = email address
+	otpLockKey     string = "otp:lock:%s"     // s = email address
+	otpResendKey   string = "otp:resend:%s"   // s = email address
 
 	otpTTL         time.Duration = 5 * time.Minute
 	otpMaxAttempts time.Duration = 15 * time.Minute

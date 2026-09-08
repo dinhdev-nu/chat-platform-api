@@ -140,7 +140,7 @@ func (b *PubSubBroker) DeleteSeq(ctx context.Context, convID []byte) error {
 	return b.client.Del(ctx, key).Err()
 }
 
-func (b *PubSubBroker) ToJsonRawMessage(payload map[string]any) (json.RawMessage, error) {
+func (b *PubSubBroker) ToJSONRawMessage(payload map[string]any) (json.RawMessage, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

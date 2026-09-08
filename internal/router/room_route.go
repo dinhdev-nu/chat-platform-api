@@ -5,7 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoomRouters(
+func RegisterRoomRoutes(
 	r *gin.RouterGroup,
 	rp *gin.RouterGroup,
 	rh *h.RoomHandler,

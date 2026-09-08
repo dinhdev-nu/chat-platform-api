@@ -203,7 +203,7 @@ func (h *MessageHandler) toAttachmentDomain(attachReq []dto.AttachmentRequest) [
 		attachments[i] = &model.Attachment{
 			FileURL:       req.FileURL,
 			Filename:      req.FileName,
-			MimeType:      req.MimeType,
+			MIMEType:      req.MIMEType,
 			FileSizeBytes: req.FileSizeBytes,
 			Width:         req.Width,
 			Height:        req.Height,

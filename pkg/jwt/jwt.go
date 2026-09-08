@@ -34,7 +34,7 @@ type GenerateTokenParams struct {
 type GenerateTokenResult struct {
 	Token     string
 	JTI       []byte
-	ExpiresAT time.Time
+	ExpiresAt time.Time
 }
 
 func (m *JWTManager) GenerateToken(params GenerateTokenParams) (*GenerateTokenResult, error) {
@@ -64,7 +64,7 @@ func (m *JWTManager) GenerateToken(params GenerateTokenParams) (*GenerateTokenRe
 	return &GenerateTokenResult{
 		Token:     signed,
 		JTI:       params.JTI,
-		ExpiresAT: expiresAt,
+		ExpiresAt: expiresAt,
 	}, nil
 }
 

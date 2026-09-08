@@ -276,7 +276,7 @@ func (s *AuthService) createLoginSession(
 		DeviceID:   deviceID,
 		DeviceName: &req.DeviceName,
 		IPAddress:  &ip,
-		ExpiresAt:  token.ExpiresAT,
+		ExpiresAt:  token.ExpiresAt,
 		LastUsedAt: s.now(), // Không có trigger nên set thủ công
 	}
 	if err := s.tokenRepo.Upsert(ctx, userToken); err != nil {
@@ -294,7 +294,7 @@ func (s *AuthService) createLoginSession(
 
 	return &dto.LoginResponse{
 		AccessToken: token.Token,
-		ExpiresAt:   token.ExpiresAT,
+		ExpiresAt:   token.ExpiresAt,
 		User:        presenter.User(user),
 	}, nil
 }
@@ -396,11 +396,11 @@ func (s *AuthService) loadActiveTokenUser(ctx context.Context, userID []byte) (*
 			return nil, ar.New(ar.ErrUserNotFound, "User not found")
 		}
 
-		userJson, err := json.Marshal(userDB)
+		userJSON, err := json.Marshal(userDB)
 		if err != nil {
 			return nil, ar.Internal(err)
 		}
-		cached = string(userJson)
+		cached = string(userJSON)
 
 		// warm up cache
 		if err := s.userCache.WarmUser(ctx, userID, cached); err != nil {

@@ -45,8 +45,8 @@ func InitRouter(ctx context.Context) (*gin.Engine, *wire.Container) {
 	{
 		router.RegisterAuthRoutes(v1, v1Protected, container.AuthHandler)
 		router.RegisterUserRoutes(v1, v1Protected, container.UserHandler)
-		router.RegisterRoomRouters(v1, v1Protected, container.RoomHandler)
-		router.RegisterMessageRouters(v1, v1Protected, container.MessageHandler)
+		router.RegisterRoomRoutes(v1, v1Protected, container.RoomHandler)
+		router.RegisterMessageRoutes(v1, v1Protected, container.MessageHandler)
 		v1Protected.GET("/ws", container.WebSocketHandler.ServeWS)
 	}
 

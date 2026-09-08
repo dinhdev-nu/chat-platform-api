@@ -189,7 +189,7 @@ func (r *messageRepo) InsertMessage(ctx context.Context, msg *model.Message) err
 		Type:             int8(msg.Type),
 		Content:          stringPtrToNullString(msg.Content),
 		ContentEncrypted: msg.ContentEncrypted,
-		Iv:               stringPtrToNullString(msg.Iv),
+		Iv:               stringPtrToNullString(msg.IV),
 		Seq:              msg.Seq,
 	})
 	if err != nil {
@@ -246,7 +246,7 @@ func attachmentParams(att *model.Attachment) (sqlc.InsertAttachmentParams, error
 		MessageID:     att.MessageID,
 		FileName:      att.Filename,
 		FileUrl:       att.FileURL,
-		MimeType:      att.MimeType,
+		MimeType:      att.MIMEType,
 		FileSizeBytes: att.FileSizeBytes,
 		Width:         width,
 		Height:        height,

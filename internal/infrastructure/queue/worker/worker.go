@@ -46,15 +46,15 @@ func (w *Worker) Register(h queue.Handler) *Worker {
 	return w
 }
 
+// Run consumes jobs from a consumer group created during initialization.
 func (w *Worker) Run(ctx context.Context) {
-	// Tạo consumer group nếu chưa tồn tại
 	w.logger.Info("worker running",
 		zap.String("stream", w.stream),
 		zap.String("group", w.group),
 		zap.String("consumer", w.consumer),
 	)
 
-	// Goroutine recover pending messages khi worker start
+	// Định kỳ thu hồi job bị treo và chuyển job đến hạn retry về stream.
 	go w.reclaimer(ctx)
 	go w.promoter(ctx)
 
@@ -172,14 +172,14 @@ func (w *Worker) processOne(ctx context.Context, msg iredis.StreamMessage) {
 }
 
 func (w *Worker) promoter(ctx context.Context) {
-	ticket := time.NewTicker(promoteInterval)
-	defer ticket.Stop()
+	ticker := time.NewTicker(promoteInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticket.C:
+		case <-ticker.C:
 			n, err := w.store.PromoteDelayedJobs(ctx, w.stream)
 			if err != nil {
 				w.logger.Error("promote delayed failed", zap.String("stream", w.stream), zap.Error(err))
@@ -192,16 +192,16 @@ func (w *Worker) promoter(ctx context.Context) {
 	}
 }
 
-// reclaimer: định kỳ reclaim pending messages crash
+// reclaimer thu hồi job chưa ACK quá reclaimIdle để xử lý lại.
 func (w *Worker) reclaimer(ctx context.Context) {
-	ticket := time.NewTicker(reclaimInterval)
-	defer ticket.Stop()
+	ticker := time.NewTicker(reclaimInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticket.C:
+		case <-ticker.C:
 			msgs, err := w.store.ReclaimPending(ctx, w.stream, w.group, w.consumer, reclaimIdle)
 			if err != nil {
 				w.logger.Error("reclaim failed pending", zap.Error(err))

@@ -46,7 +46,7 @@ func (u *User) ToDomain() *model.User {
 	}
 }
 
-func UserFormDomain(user *model.User) *User {
+func UserFromDomain(user *model.User) *User {
 	return &User{
 		ID:        user.ID,
 		Username:  user.Username,

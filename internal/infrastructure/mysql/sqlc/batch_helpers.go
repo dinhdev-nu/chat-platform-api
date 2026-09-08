@@ -1,3 +1,4 @@
+// Handwritten batch extensions. Kept in package sqlc to access Queries.db.
 package sqlc
 
 import (
@@ -16,7 +17,7 @@ func (q *Queries) BatchInsertConversationMembers(ctx context.Context, args []Ins
 
 	for i := range args {
 		placeholders[i] = "(?, ?, ?)"
-		queryArgs = append(queryArgs, args[i].ConversationID, args[i].UserID, args[i].Role) // ✅ Thêm dòng này
+		queryArgs = append(queryArgs, args[i].ConversationID, args[i].UserID, args[i].Role)
 	}
 
 	query := fmt.Sprintf(

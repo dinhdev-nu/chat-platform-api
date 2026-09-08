@@ -24,7 +24,7 @@ type Message struct {
 	Type             MessageType
 	Content          *string
 	ContentEncrypted bool
-	Iv               *string
+	IV               *string
 	Seq              uint64
 	IsEdited         bool
 	IsDeleted        bool
@@ -48,7 +48,7 @@ type Attachment struct {
 	MessageID     []byte
 	Filename      string
 	FileURL       string
-	MimeType      string
+	MIMEType      string
 	FileSizeBytes uint64
 	Width         *int
 	Height        *int

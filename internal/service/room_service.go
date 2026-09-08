@@ -111,8 +111,7 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 		return nil, false, ae.New(ae.ErrInvalidInput, "Cannot create DM with yourself")
 	}
 
-	// Ko cần cache User Status
-	// 1/ Verify target user exists
+	// 1/ Verify the target user exists and is active using the repository.
 	targetUser, err := s.userRepo.FindByID(ctx, targetUserID)
 	if err != nil {
 		return nil, false, ae.Internal(err)

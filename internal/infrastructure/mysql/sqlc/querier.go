@@ -43,7 +43,7 @@ type Querier interface {
 	// Cursor pagination dùng (created_at, seq) — time trước thu hẹp phạm vi.
 	ListMessagesNextPage(ctx context.Context, arg ListMessagesNextPageParams) ([]Message, error)
 	SoftDeleteMessage(ctx context.Context, id []byte) error
-	// Gọi bởi Kafka worker async sau khi gửi tin nhắn.
+	// Updated by the Redis Streams worker, or synchronously by the service fallback.
 	UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error
 	UpdateLastReadAt(ctx context.Context, arg UpdateLastReadAtParams) error
 	UpdateMessageContent(ctx context.Context, arg UpdateMessageContentParams) (int64, error)

@@ -4,6 +4,7 @@ WORKER_NAME := chat-platform-worker
 API_MAIN_PATH := ./cmd/api/main.go
 WORKER_MAIN_PATH := ./cmd/worker/main.go
 MIGRATION_DIR := ./internal/infrastructure/mysql/migrations
+SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
 DSN = "$(shell go run ./cmd/dsn/main.go)"
 
 .PHONY: help
@@ -56,20 +57,20 @@ migrate_reset: ## Reset the database by rolling back all migrations and then app
 	APP_ENV=$(APP_ENV) goose -dir $(MIGRATION_DIR) mysql $(DSN) reset
 
 .PHONY: gen
-gen: ## Generate code using sqlc
-	sqlc generate
+gen: ## Generate query code with the pinned sqlc version
+	$(SQLC) generate
 	@echo "✓ sqlc generated"
 
 .PHONY: gen_check
 gen_check: ## Verify sqlc queries are valid
-	@sqlc vet
+	$(SQLC) vet
 
 .PHONY: lint
 lint: ## Run linter
 	golangci-lint run ./...
 
 .PHONY: check
-check: ## Run Go checks and include the local test suite when available
+check: fmt-check ## Check format and Go code; include local tests when available
 ifneq ($(wildcard test/main.go),)
 	go run ./test vet ./...
 	go run ./test test ./... -count=1
@@ -86,9 +87,13 @@ else
 	$(error Local tests are unavailable; test/ is intentionally untracked)
 endif
 
-.PHONY: seed
-seed: ## Run seed data
-	APP_ENV=$(APP_ENV) go run ./cmd/seed/main.go
+.PHONY: fmt
+fmt: ## Format handwritten Go files
+	go run ./scripts/format -w
+
+.PHONY: fmt-check
+fmt-check: ## Check handwritten Go formatting without changing files
+	go run ./scripts/format
 
 .DEFAULT: 
 	@echo "No rule target. Please use 'make help'"

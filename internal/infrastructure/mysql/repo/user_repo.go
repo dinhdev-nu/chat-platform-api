@@ -263,7 +263,7 @@ func (r *userRepo) FindByEmail(ctx context.Context, email string) (*model.User, 
 }
 
 func (r *userRepo) Create(ctx context.Context, user *model.User) error {
-	g := gormmodel.UserFormDomain(user)
+	g := gormmodel.UserFromDomain(user)
 	if err := r.db.WithContext(ctx).Create(&g).Error; err != nil {
 		return fmt.Errorf("userRepo.Create: %w", err)
 	}

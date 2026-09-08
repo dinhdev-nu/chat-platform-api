@@ -19,7 +19,7 @@ type ToggleReactionRequest struct {
 type AttachmentRequest struct {
 	FileURL       string `json:"file_url"        binding:"required,max=512"`
 	FileName      string `json:"file_name"       binding:"required,max=255"`
-	MimeType      string `json:"mime_type"       binding:"required,max=100"`
+	MIMEType      string `json:"mime_type"       binding:"required,max=100"`
 	FileSizeBytes uint64 `json:"file_size_bytes" binding:"required,min=1"`
 	Width         *int   `json:"width,omitempty" binding:"omitempty,min=1,max=16777215"`
 	Height        *int   `json:"height,omitempty" binding:"omitempty,min=1,max=16777215"`
@@ -36,7 +36,7 @@ type AttachmentResponse struct {
 	MessageID     string `json:"message_id,omitempty"`
 	FileName      string `json:"file_name"`
 	FileURL       string `json:"file_url"`
-	MimeType      string `json:"mime_type"`
+	MIMEType      string `json:"mime_type"`
 	FileSizeBytes uint64 `json:"file_size_bytes"`
 	Width         *int   `json:"width,omitempty"`
 	Height        *int   `json:"height,omitempty"`
@@ -60,7 +60,7 @@ type MessageResponse struct {
 	Type             int8    `json:"type"`
 	Content          *string `json:"content,omitempty"`
 	ContentEncrypted bool    `json:"content_encrypted"`
-	Iv               *string `json:"iv,omitempty"`
+	IV               *string `json:"iv,omitempty"`
 	Seq              uint64  `json:"seq"`
 	IsEdited         bool    `json:"is_edited"`
 	IsDeleted        bool    `json:"is_deleted"`

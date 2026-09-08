@@ -86,7 +86,7 @@ type UserLastSeenPayload struct {
 	SeenAt time.Time `json:"seenAt"`
 }
 
-// Job là envelope(vỏ) bọc paylaod bất kỳ
+// Job bọc payload cùng metadata dùng để xử lý và retry.
 type Job struct {
 	ID        string    `json:"id"`
 	Type      string    `json:"type"`

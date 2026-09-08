@@ -62,8 +62,11 @@ A production-grade Go backend for real-time messaging — featuring email OTP au
 
 ```bash
 go install github.com/pressly/goose/v3/cmd/goose@v3.24.1
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
 ```
+
+`make gen` and `make gen_check` run sqlc v1.29.0 through Go directly, so a
+standalone sqlc installation is optional. The first run may download the tool.
 
 ---
 
@@ -96,15 +99,20 @@ CREATE DATABASE chat_platform_api
 
 ```bash
 # Linux / macOS
+go run ./cmd/schema
 make migrate_up
 make run
 
 # Windows (PowerShell)
 $env:APP_ENV = "local"
+go run ./cmd/schema
 $dsn = go run ./cmd/dsn/main.go
 goose -dir ./internal/infrastructure/mysql/migrations mysql $dsn up
 go run ./cmd/api/main.go
 ```
+
+On a new database, run the GORM schema command before Goose: chat-table foreign
+keys reference `users`. Docker Compose runs these steps in the same order.
 
 **5. Verify**
 
@@ -169,18 +177,39 @@ YAML sections: `server`, `mysql`, `redis`, `logger`, `jwt`, `mail`, `cors`.
 
 ## 🗃 Database
 
-The project uses a hybrid approach:
+The project uses GORM for user data and Goose migrations for chat data:
 
-- **GORM AutoMigrate** — manages `users`, `oauth_accounts`, `user_tokens`, `user_contacts`
-- **Goose** — manages chat tables and schema changes (`conversations`, `messages`, `attachments`, `reactions`, `message_status`, indexes, etc.)
-- **sqlc** — generates typed query code from `internal/infrastructure/mysql/query`
+| Purpose | Source to edit | How it is applied |
+|---|---|---|
+| `users`, `oauth_accounts`, `user_tokens`, `user_contacts` | Models in `internal/infrastructure/mysql/gorm/model/`; registration in `gorm/db.go` | GORM AutoMigrate during API/worker initialization or `go run ./cmd/schema` |
+| `conversations`, `conversation_members`, `messages`, `attachments`, `message_reactions`, `message_status`, and chat indexes | New SQL migrations in `internal/infrastructure/mysql/migrations/` | Goose via `make migrate_up` |
+| Typed DB queries | SQL in `internal/infrastructure/mysql/query/` and generation settings in `sqlc.yaml` | `make gen_check` and `make gen` |
+| The `users` schema used by sqlc | `internal/infrastructure/mysql/schema/user_stub.sql` | Code-generation input only; update alongside relevant GORM user field changes |
+
+sqlc reads both migrations and schema stubs. The user stub is not a runtime
+migration. Existing migrations, including the historical creation and removal of
+`user_contacts`, remain part of the migration history; current contact models are
+managed by GORM. For schema changes, follow the owning model/migration and review
+the resulting SQL; AutoMigrate does not replace explicit data migrations.
+
+Files in `internal/infrastructure/mysql/sqlc/` with a `Code generated ... DO NOT EDIT`
+header are generated output. Edit their SQL/config inputs and regenerate them.
+`batch_helpers.go` and `to_domain.go` are handwritten extensions in that package;
+batch helpers stay there to access `Queries.db`. They can be edited directly.
+The ignored `docs/database/db2.sql`, when present, is a reference snapshot.
+
+After changing user fields referenced by queries, update the GORM model and user
+stub together, then validate and regenerate queries with the pinned sqlc version.
+Review generated diffs before committing. Old migration comments may mention
+Kafka; the current job transport is Redis Streams.
 
 ```bash
 make migrate_up           # Apply all pending migrations
 make migrate_status       # Show migration state
 make migrate_down         # Roll back last migration
 make migrate_create name=add_something  # New migration file
-make gen                  # Regenerate sqlc code
+make gen_check            # Validate queries without connecting to the database
+make gen                  # Regenerate query code with sqlc v1.29.0
 ```
 
 ---
@@ -299,7 +328,9 @@ make run-worker     # Run background worker
 make build          # Compile binary
 make tidy           # go mod tidy
 make lint           # golangci-lint
-make check          # Go checks; also runs local tests when available
+make fmt            # Format handwritten Go source
+make fmt-check      # Check formatting without writing files
+make check          # Format/vet/test; includes local tests when available
 make test           # Requires the untracked local test/ directory
 go run ./test       # Local test suite without Make (requires test/)
 ```
@@ -307,8 +338,16 @@ go run ./test       # Local test suite without Make (requires test/)
 
 > The Makefile uses POSIX shell syntax. On Windows, use **Git Bash** or **WSL**.
 
-`make check` only invokes Go commands and also works from PowerShell with Go and
-GNU Make on PATH. When `test/main.go` exists, it runs `go vet ./...` and
+`make check`, `make fmt`, and `make fmt-check` invoke Go commands and also work
+from PowerShell with Go and GNU Make on PATH. Formatting covers handwritten Go
+files in `cmd`, `config`, `global`, `internal`, `pkg`, and `scripts`; generated
+files are left to their generators. Format checks report file paths and fail
+without modifying source. Local test sources can be formatted separately with
+`go run ./scripts/format -w test`.
+
+`.gitattributes` keeps Go and shell files on LF line endings across platforms.
+
+After checking format, when `test/main.go` exists, `make check` runs `go vet ./...` and
 `go test ./... -count=1` through the local overlay runner, including the centralized
 unit/contract tests. Otherwise it runs the standard Go commands directly against
 the checkout. A fresh clone contains no unit/contract tests, so this fallback
@@ -346,11 +385,11 @@ retaining their existing HTTP response shapes and messages.
 Before opening a PR:
 
 1. Keep changes focused and scoped
-2. Run `gofmt -w .` and `go mod tidy`
+2. Run `make fmt`; run `go mod tidy` when dependencies change
 3. Run `make check` — no regressions
-4. Run `make gen` if SQL queries changed
-5. Add a Goose migration for any schema change
-6. **Never commit** `.env`, YAML configs, logs, or local files
+4. Run `make gen_check` and `make gen` if SQL queries or generation inputs changed
+5. Follow the [database ownership table](#-database) for schema changes; add a new Goose migration for chat tables and keep relevant GORM models/user stubs in sync
+6. **Never commit** `.env`, local YAML configs, logs, or local test/audit files; keep example configs free of secrets
 
 ---
 
@@ -359,8 +398,8 @@ Before opening a PR:
 - [ ] `LICENSE`
 - [ ] `CONTRIBUTING.md`
 - [ ] `SECURITY.md`
-- [ ] `.env.example` *(confirm it exists)*
-- [ ] Docker / `docker-compose.yml`
+- [x] `.env.example`
+- [x] Docker / `compose.yaml`
 - [ ] CI pipeline (GitHub Actions)
 
 ---
