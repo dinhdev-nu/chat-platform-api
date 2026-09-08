@@ -122,7 +122,14 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 			return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 		}
 		for _, row := range rows {
-			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastMessageText, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
+			c, err := mapConversationRow(conversationRow{
+				ID: row.ID, Type: row.Type,
+				Name: row.Name, AvatarURL: row.AvatarUrl,
+				LastMessageID: row.LastMessageID, LastMessageText: row.LastMessageText,
+				LastActivityAt: row.LastActivityAt,
+				CreatedAt:      row.CreatedAt, UpdatedAt: row.UpdatedAt,
+				Role: row.Role, IsMuted: row.IsMuted,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 			}
@@ -140,7 +147,14 @@ func (r *roomRepo) ListConversations(ctx context.Context, userID []byte, cursorT
 			return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 		}
 		for _, row := range rows {
-			c, err := appendConv(row.ID, row.Type, row.Name, row.AvatarUrl, row.LastMessageID, row.LastMessageText, row.LastActivityAt, row.CreatedAt, row.UpdatedAt, row.Role, row.IsMuted)
+			c, err := mapConversationRow(conversationRow{
+				ID: row.ID, Type: row.Type,
+				Name: row.Name, AvatarURL: row.AvatarUrl,
+				LastMessageID: row.LastMessageID, LastMessageText: row.LastMessageText,
+				LastActivityAt: row.LastActivityAt,
+				CreatedAt:      row.CreatedAt, UpdatedAt: row.UpdatedAt,
+				Role: row.Role, IsMuted: row.IsMuted,
+			})
 			if err != nil {
 				return nil, fmt.Errorf("roomRepo.ListConversations: %w", err)
 			}
@@ -219,16 +233,27 @@ func (r *roomRepo) BatchInsertConversationMembers(ctx context.Context, membs []*
 	return nil
 }
 
-func appendConv(id []byte, cType int8, name, avatar any, lastMsgID sql.NullString, lastMsgText sql.NullString, lastAct *time.Time, created, updated time.Time, role int8, isMuted bool) (*model.ConversationListRow, error) {
-	msgID, err := nullStringToByte(lastMsgID)
+// conversationRow is the mapping boundary for sqlc's first and next page rows.
+type conversationRow struct {
+	ID              []byte
+	Type            int8
+	Name            any
+	AvatarURL       any
+	LastMessageID   sql.NullString
+	LastMessageText sql.NullString
+	LastActivityAt  *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Role            int8
+	IsMuted         bool
+}
+
+func mapConversationRow(row conversationRow) (*model.ConversationListRow, error) {
+	namePtr, err := nullableStringValueToPointer(row.Name)
 	if err != nil {
 		return nil, err
 	}
-	namePtr, err := nullableStringValueToPointer(name)
-	if err != nil {
-		return nil, err
-	}
-	avatarPtr, err := nullableStringValueToPointer(avatar)
+	avatarPtr, err := nullableStringValueToPointer(row.AvatarURL)
 	if err != nil {
 		return nil, err
 	}
@@ -236,18 +261,18 @@ func appendConv(id []byte, cType int8, name, avatar any, lastMsgID sql.NullStrin
 	return &model.ConversationListRow{
 
 		Conversation: model.Conversation{
-			ID:              id,
-			Type:            model.ConversationType(cType),
+			ID:              row.ID,
+			Type:            model.ConversationType(row.Type),
 			Name:            namePtr,
 			AvatarURL:       avatarPtr,
-			LastMessageID:   msgID,
-			LastMessageText: nullStringToStringPointer(lastMsgText),
-			LastActivityAt:  lastAct,
-			CreatedAt:       created,
-			UpdatedAt:       updated,
+			LastMessageID:   nullStringToByte(row.LastMessageID),
+			LastMessageText: nullStringToStringPointer(row.LastMessageText),
+			LastActivityAt:  row.LastActivityAt,
+			CreatedAt:       row.CreatedAt,
+			UpdatedAt:       row.UpdatedAt,
 		},
-		Role:        model.MemberRole(role),
-		IsMuted:     isMuted,
+		Role:        model.MemberRole(row.Role),
+		IsMuted:     row.IsMuted,
 		UnreadCount: 0, // Initialize unread count
 	}, nil
 }
@@ -269,11 +294,11 @@ func StringPtrToNullString(val *string) sql.NullString {
 	}
 }
 
-func nullStringToByte(ns sql.NullString) ([]byte, error) {
+func nullStringToByte(ns sql.NullString) []byte {
 	if !ns.Valid {
-		return nil, nil
+		return nil
 	}
-	return []byte(ns.String), nil
+	return []byte(ns.String)
 }
 
 func nullStringToStringPointer(ns sql.NullString) *string {
