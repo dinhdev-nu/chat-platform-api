@@ -15,6 +15,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
+	"github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
@@ -39,20 +40,6 @@ type MessageRooms interface {
 	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
 	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
 }
-type MessageStore interface {
-	InsertMessage(ctx context.Context, msg *model.Message) error
-	BatchInsertAttachments(ctx context.Context, args []*model.Attachment) error
-	SoftDeleteMessage(ctx context.Context, id []byte) error
-	ListMessages(ctx context.Context, convID []byte, cursorTS *time.Time, cursorSeq *uint64, limit int32) ([]*model.Message, error)
-	GetAttachmentsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.Attachment, error)
-	GetReactionsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.MessageReaction, error)
-	GetMessageCursorTS(ctx context.Context, msgID, convID []byte) (*time.Time, error)
-	GetUnreadCountByWatermark(ctx context.Context, userID, convID []byte) (int64, error)
-	GetMessageByID(ctx context.Context, id []byte) (*model.Message, error)
-	UpdateMessageContent(ctx context.Context, arg *model.Message) (int64, error)
-	InsertMessageReaction(ctx context.Context, msgID, userID []byte, emoji string) (int64, error)
-	DeleteMessageReaction(ctx context.Context, msgID, userID []byte, emoji string) error
-}
 type MessageCache interface {
 	IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error)
 	GetMembers(ctx context.Context, convID []byte) ([][]byte, error)
@@ -72,7 +59,7 @@ type MessageUserCache interface {
 // Cache, Sequences and Events are explicit adapters supplied by the caller.
 type MessageDependencies struct {
 	Rooms     MessageRooms
-	Messages  MessageStore
+	Messages  repository.MessageRepository
 	Users     MessageUsers
 	Viewer    RoomViewer
 	Cache     MessageCache
@@ -90,7 +77,7 @@ type RoomViewer interface {
 
 type MessageService struct {
 	roomRepo   MessageRooms
-	msgRepo    MessageStore
+	msgRepo    repository.MessageRepository
 	userRepo   MessageUsers
 	roomViewer RoomViewer
 	cache      MessageCache

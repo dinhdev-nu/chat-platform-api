@@ -16,8 +16,10 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/redis"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
+	"github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
+	"github.com/dinhdev-nu/chat-platform-api/pkg/types"
 	"go.uber.org/zap"
 )
 
@@ -29,18 +31,6 @@ type PresenceReader interface {
 type RoomUsers interface {
 	FindByID(ctx context.Context, id []byte) (*model.User, error)
 	FindActiveIDs(ctx context.Context, ids [][]byte) (map[string]bool, error)
-}
-type RoomStore interface {
-	GetDMConversation(ctx context.Context, userID1, userID2 []byte) ([]byte, error)
-	GetConversationByID(ctx context.Context, id []byte) (*model.Conversation, error)
-	CreateConversation(ctx context.Context, conv *model.Conversation) error
-	BatchInsertConversationMembers(ctx context.Context, membs []*model.ConversationMember) error
-	ListConversations(ctx context.Context, userID []byte, cursorTS *time.Time, cursorID []byte, limit int32) ([]*model.ConversationListRow, error)
-	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
-	InsertConversationMember(ctx context.Context, memb *model.ConversationMember) error
-	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
-	DeleteConversationMember(ctx context.Context, convID, userID []byte) error
-	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
 }
 type RoomMessages interface {
 	GetUnreadCountByWatermark(ctx context.Context, userID, convID []byte) (int64, error)
@@ -59,7 +49,7 @@ type RoomCache interface {
 
 type RoomDependencies struct {
 	Users     RoomUsers
-	Rooms     RoomStore
+	Rooms     repository.RoomRepository
 	Messages  RoomMessages
 	Cache     RoomCache
 	Sequences SequenceAllocator
@@ -72,7 +62,7 @@ type RoomDependencies struct {
 
 type RoomService struct {
 	userRepo  RoomUsers
-	roomRepo  RoomStore
+	roomRepo  repository.RoomRepository
 	msgRepo   RoomMessages
 	cache     RoomCache
 	sequences SequenceAllocator
@@ -210,36 +200,9 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 		return nil, ae.ValidationError("Invalid conversation type")
 	}
 
-	memberIDs := make([][]byte, 0, len(req.MemberUIDs))
-	seen := make(map[string]struct{}, len(req.MemberUIDs)+1)
-	seen[string(currentUID)] = struct{}{}
-	for _, mID := range req.MemberUIDs {
-		memberID := []byte(mID)
-		if len(memberID) != 16 {
-			return nil, ae.ValidationError("Invalid member user ID")
-		}
-		if bytes.Equal(memberID, currentUID) {
-			return nil, ae.New(ae.ErrInvalidInput, "Creator must not be included in member_user_ids")
-		}
-		key := string(memberID)
-		if _, ok := seen[key]; ok {
-			return nil, ae.New(ae.ErrInvalidInput, "Duplicate member_user_ids are not allowed")
-		}
-		seen[key] = struct{}{}
-		memberIDs = append(memberIDs, memberID)
-	}
-	if len(memberIDs) == 0 {
-		return nil, ae.ValidationError("member_user_ids is required")
-	}
-
-	activeIDs, err := s.userRepo.FindActiveIDs(ctx, memberIDs)
+	memberIDs, err := s.validateGroupMembers(ctx, currentUID, req.MemberUIDs)
 	if err != nil {
-		return nil, ae.Internal(err)
-	}
-	for _, memberID := range memberIDs {
-		if !activeIDs[string(memberID)] {
-			return nil, ae.New(ae.ErrUserNotFound, "User not found")
-		}
+		return nil, err
 	}
 
 	convID, err := crypto.NewUUIDv7Bytes()
@@ -264,20 +227,9 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 	allMemberIDs = append(allMemberIDs, currentUID)
 	allMemberIDs = append(allMemberIDs, memberIDs...)
 
-	margs := make([]*model.ConversationMember, 0, len(allMemberIDs))
-	for i, memberID := range allMemberIDs {
-		role := model.RoleMember
-		if i == 0 {
-			role = model.RoleAdmin
-		}
-		margs = append(margs, &model.ConversationMember{
-			ConversationID: convID,
-			UserID:         memberID,
-			Role:           role,
-		})
-	}
+	members := buildGroupMemberships(convID, allMemberIDs)
 
-	if err := s.roomRepo.BatchInsertConversationMembers(ctx, margs); err != nil {
+	if err := s.roomRepo.BatchInsertConversationMembers(ctx, members); err != nil {
 		return nil, ae.Internal(err)
 	}
 
@@ -301,6 +253,58 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 	}
 
 	return conv, nil
+}
+
+func (s *RoomService) validateGroupMembers(ctx context.Context, creatorID []byte, requestedIDs []types.HexID) ([][]byte, error) {
+	memberIDs := make([][]byte, 0, len(requestedIDs))
+	seen := make(map[string]struct{}, len(requestedIDs)+1)
+	seen[string(creatorID)] = struct{}{}
+	for _, mID := range requestedIDs {
+		memberID := []byte(mID)
+		if len(memberID) != 16 {
+			return nil, ae.ValidationError("Invalid member user ID")
+		}
+		if bytes.Equal(memberID, creatorID) {
+			return nil, ae.New(ae.ErrInvalidInput, "Creator must not be included in member_user_ids")
+		}
+		key := string(memberID)
+		if _, ok := seen[key]; ok {
+			return nil, ae.New(ae.ErrInvalidInput, "Duplicate member_user_ids are not allowed")
+		}
+		seen[key] = struct{}{}
+		memberIDs = append(memberIDs, memberID)
+	}
+	if len(memberIDs) == 0 {
+		return nil, ae.ValidationError("member_user_ids is required")
+	}
+
+	activeIDs, err := s.userRepo.FindActiveIDs(ctx, memberIDs)
+	if err != nil {
+		return nil, ae.Internal(err)
+	}
+	for _, memberID := range memberIDs {
+		if !activeIDs[string(memberID)] {
+			return nil, ae.New(ae.ErrUserNotFound, "User not found")
+		}
+	}
+	return memberIDs, nil
+}
+
+// The first ID is the creator; remaining IDs have already been validated.
+func buildGroupMemberships(convID []byte, allMemberIDs [][]byte) []*model.ConversationMember {
+	members := make([]*model.ConversationMember, 0, len(allMemberIDs))
+	for i, memberID := range allMemberIDs {
+		role := model.RoleMember
+		if i == 0 {
+			role = model.RoleAdmin
+		}
+		members = append(members, &model.ConversationMember{
+			ConversationID: convID,
+			UserID:         memberID,
+			Role:           role,
+		})
+	}
+	return members
 }
 
 func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor *string, limit int) (*ResultPage[*model.ConversationListRow], error) {
@@ -417,24 +421,11 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 	if err != nil {
 		return ae.Internal(err)
 	}
-	if err := s.cache.AddMember(ctx, convUID, targetUID); err != nil {
-		invalidateCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
-		invalidateErr := s.cache.InvalidateMembers(invalidateCtx, convUID)
-		cancel()
-		if invalidateErr != nil {
-			s.logger.Warn("roomService.AddMember: failed to invalidate member cache",
-				zap.String("conv_id", hex.EncodeToString(convUID)),
-				zap.Error(invalidateErr),
-			)
-		}
-	}
+	s.cacheAddedMember(ctx, convUID, targetUID)
 	s.enqueueSystemMessage(ctx, convUID, actorUID, fmt.Sprintf("%s added %s", actorName, targetUser.Username))
 	// Push notification
 	convHex := hex.EncodeToString(convUID)
-	actor := presenter.UserSummaryFromParts(actorUID, actorName, nil)
-	if actorUser, err := s.userRepo.FindByID(ctx, actorUID); err == nil && actorUser != nil {
-		actor = presenter.UserSummaryFromUser(actorUser)
-	}
+	actor := s.memberActorSummary(ctx, actorUID, actorName)
 	member := presenter.UserSummaryFromUser(targetUser)
 	payload := presenter.MemberPayload(redis.EventMemberAdded, convUID, targetUID, member, actor, nil)
 	_ = s.events.Publish(ctx, convUID, redis.Event{
@@ -451,6 +442,21 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 	}
 	s.publishConvSubscribe(ctx, targetUID, convUID, targetPayload)
 	return nil
+}
+
+// A cache failure must not undo the completed membership write.
+func (s *RoomService) cacheAddedMember(ctx context.Context, convUID, targetUID []byte) {
+	if err := s.cache.AddMember(ctx, convUID, targetUID); err != nil {
+		invalidateCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
+		invalidateErr := s.cache.InvalidateMembers(invalidateCtx, convUID)
+		cancel()
+		if invalidateErr != nil {
+			s.logger.Warn("roomService.AddMember: failed to invalidate member cache",
+				zap.String("conv_id", hex.EncodeToString(convUID)),
+				zap.Error(invalidateErr),
+			)
+		}
+	}
 }
 
 func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte, actorName string) error {
@@ -488,29 +494,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 		return ae.Internal(err)
 	}
 
-	go func(parent context.Context) {
-		cacheCtx, cancel := detachedContext(parent, sideEffectTimeout)
-		defer cancel()
-
-		if err := s.cache.RemoveMember(cacheCtx, convID, targetUID); err != nil {
-			s.logger.Warn("roomService.RemoveMember: failed to remove member from cache",
-				zap.String("conv_id", hex.EncodeToString(convID)),
-				zap.Error(err),
-			)
-			if invalidateErr := s.cache.InvalidateMembers(cacheCtx, convID); invalidateErr != nil {
-				s.logger.Warn("roomService.RemoveMember: failed to invalidate member cache",
-					zap.String("conv_id", hex.EncodeToString(convID)),
-					zap.Error(invalidateErr),
-				)
-			}
-		}
-		if err := s.cache.DeleteUnread(cacheCtx, targetUID, convID); err != nil {
-			s.logger.Warn("roomService.RemoveMember: failed to delete unread cache",
-				zap.String("conv_id", hex.EncodeToString(convID)),
-				zap.Error(err),
-			)
-		}
-	}(ctx)
+	go s.removeMemberCache(ctx, convID, targetUID)
 
 	action := "left"
 	if !isSelf {
@@ -520,10 +504,7 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 
 	// Push notification
 	convHex := hex.EncodeToString(convID)
-	actor := presenter.UserSummaryFromParts(actorUID, actorName, nil)
-	if actorUser, err := s.userRepo.FindByID(ctx, actorUID); err == nil && actorUser != nil {
-		actor = presenter.UserSummaryFromUser(actorUser)
-	}
+	actor := s.memberActorSummary(ctx, actorUID, actorName)
 	member := presenter.UserSummaryFromParts(targetUID, targetName, nil)
 	if targetUser != nil {
 		member = presenter.UserSummaryFromUser(targetUser)
@@ -539,6 +520,39 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 	s.publishConvUnsubscribe(ctx, targetUID, convID, payload)
 
 	return nil
+}
+
+// Run after persistence with a detached context, even if the request is canceled.
+func (s *RoomService) removeMemberCache(parent context.Context, convID, targetUID []byte) {
+	cacheCtx, cancel := detachedContext(parent, sideEffectTimeout)
+	defer cancel()
+
+	if err := s.cache.RemoveMember(cacheCtx, convID, targetUID); err != nil {
+		s.logger.Warn("roomService.RemoveMember: failed to remove member from cache",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.Error(err),
+		)
+		if invalidateErr := s.cache.InvalidateMembers(cacheCtx, convID); invalidateErr != nil {
+			s.logger.Warn("roomService.RemoveMember: failed to invalidate member cache",
+				zap.String("conv_id", hex.EncodeToString(convID)),
+				zap.Error(invalidateErr),
+			)
+		}
+	}
+	if err := s.cache.DeleteUnread(cacheCtx, targetUID, convID); err != nil {
+		s.logger.Warn("roomService.RemoveMember: failed to delete unread cache",
+			zap.String("conv_id", hex.EncodeToString(convID)),
+			zap.Error(err),
+		)
+	}
+}
+
+func (s *RoomService) memberActorSummary(ctx context.Context, actorUID []byte, actorName string) *presenter.UserSummary {
+	actor := presenter.UserSummaryFromParts(actorUID, actorName, nil)
+	if actorUser, err := s.userRepo.FindByID(ctx, actorUID); err == nil && actorUser != nil {
+		actor = presenter.UserSummaryFromUser(actorUser)
+	}
+	return actor
 }
 
 func decodeCursor(cursor string) (time.Time, []byte, error) {

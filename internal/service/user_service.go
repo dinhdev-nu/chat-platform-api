@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
+	"github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	ae "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"go.uber.org/zap"
 )
@@ -23,21 +24,8 @@ type ProfileCacheWriter interface {
 	WarmUser(context.Context, []byte, string) error
 }
 
-type UserStore interface {
-	Update(ctx context.Context, userID []byte, update *model.UserProfileUpdate) error
-	FindByID(ctx context.Context, id []byte) (*model.User, error)
-	SearchUsers(ctx context.Context, curUID []byte, q string, cursor *string, limit int) ([]*model.SearchUser, error)
-	CheckUserExists(ctx context.Context, id []byte) (bool, error)
-	GetContactPair(ctx context.Context, uid1, uid2 []byte) ([]*model.UserContact, error)
-	UpdateContactStatus(ctx context.Context, contactID uint64, status model.ContactStatus) (int64, error)
-	CreateContactRequest(ctx context.Context, userID, contactID []byte) error
-	GetContactRecord(ctx context.Context, userID, contactID []byte) (*model.UserContact, error)
-	GetAcceptedContacts(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
-	GetIncomingRequests(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
-}
-
 type UserDependencies struct {
-	Users     UserStore
+	Users     repository.UserRepository
 	UserCache ProfileCacheWriter
 	Presence  BulkPresenceReader
 	Controls  ControlPublisher
@@ -45,7 +33,7 @@ type UserDependencies struct {
 }
 
 type UserService struct {
-	userRepo  UserStore
+	userRepo  repository.UserRepository
 	userCache ProfileCacheWriter
 	presence  BulkPresenceReader
 	controls  ControlPublisher

@@ -12,6 +12,7 @@ import (
 	"github.com/dinhdev-nu/chat-platform-api/internal/infrastructure/queue"
 	"github.com/dinhdev-nu/chat-platform-api/internal/model"
 	"github.com/dinhdev-nu/chat-platform-api/internal/presenter"
+	"github.com/dinhdev-nu/chat-platform-api/internal/repository"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/crypto"
 	ar "github.com/dinhdev-nu/chat-platform-api/pkg/errors"
 	"github.com/dinhdev-nu/chat-platform-api/pkg/jwt"
@@ -27,15 +28,6 @@ type AuthUsers interface {
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	Create(ctx context.Context, user *model.User) error
 }
-type AuthTokens interface {
-	GetJTIByUserAndDevice(ctx context.Context, userID, deviceID []byte) ([]byte, error)
-	Upsert(ctx context.Context, token *model.UserToken) error
-	CountByUserID(ctx context.Context, userID []byte) (int64, error)
-	GetOldestJTIByUserIDBeyondLimit(ctx context.Context, userID []byte, limit int) ([][]byte, error)
-	DeleteOldestBeyondLimit(ctx context.Context, userID []byte, limit int) error
-	DeleteByJTI(ctx context.Context, jti []byte) error
-}
-
 type TokenManager interface {
 	GenerateToken(jwt.GenerateTokenParams) (*jwt.GenerateTokenResult, error)
 	ParseToken(string) (*jwt.Claims, error)
@@ -68,7 +60,7 @@ type TokenUsageThrottle interface {
 // a nil UsageThrottle disables best-effort usage recording.
 type AuthDependencies struct {
 	Users         AuthUsers
-	Tokens        AuthTokens
+	Tokens        repository.UserTokenRepository
 	JWT           TokenManager
 	OTP           OTPStore
 	Sessions      AuthSessions
@@ -86,7 +78,7 @@ const (
 
 type AuthService struct {
 	userRepo      AuthUsers
-	tokenRepo     AuthTokens
+	tokenRepo     repository.UserTokenRepository
 	jwtManager    TokenManager
 	otp           OTPStore
 	sessions      AuthSessions
@@ -352,44 +344,61 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token 2")
 	}
 
+	userID, err := s.validateSessionOwner(ctx, claims, jti)
+	if err != nil {
+		return nil, nil, err
+	}
+	user, err := s.loadActiveTokenUser(ctx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	s.recordTokenUsage(ctx, jti)
+	return user, jti, nil
+}
+
+func (s *AuthService) validateSessionOwner(ctx context.Context, claims *jwt.Claims, jti []byte) ([]byte, error) {
 	hexUserID, err := s.sessions.Get(ctx, jti)
 	if err != nil {
-		return nil, nil, ar.Internal(err)
+		return nil, ar.Internal(err)
 	}
 	if hexUserID == "" {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
+		return nil, ar.New(ar.ErrTokenInvalid, "Invalid token")
 	}
 
 	userID, err := crypto.ParseHexToBytes(hexUserID)
 	if err != nil {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token cache")
+		return nil, ar.New(ar.ErrTokenInvalid, "Invalid token cache")
 	}
 
 	claimUserID, err := claims.UserIDBytes()
 	if err != nil {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token claims")
+		return nil, ar.New(ar.ErrTokenInvalid, "Invalid token claims")
 	}
 	if !bytes.Equal(claimUserID, userID) {
-		return nil, nil, ar.New(ar.ErrTokenInvalid, "Invalid token owner")
+		return nil, ar.New(ar.ErrTokenInvalid, "Invalid token owner")
 	}
+	return userID, nil
+}
 
+func (s *AuthService) loadActiveTokenUser(ctx context.Context, userID []byte) (*model.User, error) {
 	// Kiểm tra user status từ cache để có thể revoke token ngay khi user bị suspend/deactivate
 	cached, err := s.userCache.GetUser(ctx, userID)
 	if err != nil {
-		return nil, nil, ar.Internal(err)
+		return nil, ar.Internal(err)
 	}
 	if cached == "" {
 		userDB, err := s.userRepo.FindByID(ctx, userID)
 		if err != nil {
-			return nil, nil, ar.Internal(err)
+			return nil, ar.Internal(err)
 		}
 		if userDB == nil {
-			return nil, nil, ar.New(ar.ErrUserNotFound, "User not found")
+			return nil, ar.New(ar.ErrUserNotFound, "User not found")
 		}
 
 		userJson, err := json.Marshal(userDB)
 		if err != nil {
-			return nil, nil, ar.Internal(err)
+			return nil, ar.Internal(err)
 		}
 		cached = string(userJson)
 
@@ -401,15 +410,13 @@ func (s *AuthService) ValidateToken(ctx context.Context, tokenStr string) (*mode
 
 	var user model.User
 	if err := json.Unmarshal([]byte(cached), &user); err != nil {
-		return nil, nil, ar.Internal(err)
+		return nil, ar.Internal(err)
 	}
 
 	if user.Status != model.UserStatusActive {
-		return nil, nil, ar.New(ar.ErrForbidden, "User account is not active")
+		return nil, ar.New(ar.ErrForbidden, "User account is not active")
 	}
-
-	s.recordTokenUsage(ctx, jti)
-	return &user, jti, nil
+	return &user, nil
 }
 
 func (s *AuthService) recordTokenUsage(ctx context.Context, jti []byte) {
