@@ -253,9 +253,7 @@ func (s *MessageService) ListMessages(ctx context.Context, uid, convID []byte, c
 }
 
 func (s *MessageService) readMessagePage(ctx context.Context, convID []byte, cursor *string, limit int) (messagePage, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 50
-	}
+	limit = normalizePageLimit(limit)
 	var cursorTS *time.Time
 	var cursorSeq *uint64
 	if cursor != nil && *cursor != "" {
@@ -456,12 +454,9 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.ValidationError("Message content cannot be empty")
 	}
 
-	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
+	msg, err := s.getMessageRequired(ctx, msgID)
 	if err != nil {
-		return nil, ae.Internal(err)
-	}
-	if msg == nil {
-		return nil, ae.New(ae.ErrMessageNotFound, "Message not found")
+		return nil, err
 	}
 	if msg.IsDeleted {
 		return nil, ae.New(ae.ErrMessageDeleted, "Message has been deleted")
@@ -501,12 +496,9 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 }
 
 func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte) error {
-	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
+	msg, err := s.getMessageRequired(ctx, msgID)
 	if err != nil {
-		return ae.Internal(err)
-	}
-	if msg == nil {
-		return ae.New(ae.ErrMessageNotFound, "Message not found")
+		return err
 	}
 
 	role, err := s.getMemberRoleRequired(ctx, msg.ConversationID, userID)
@@ -554,12 +546,9 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 		return "", ae.ValidationError("Emoji is too long")
 	}
 
-	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
+	msg, err := s.getMessageRequired(ctx, msgID)
 	if err != nil {
-		return "", ae.Internal(err)
-	}
-	if msg == nil {
-		return "", ae.New(ae.ErrMessageNotFound, "Message not found")
+		return "", err
 	}
 	if err := s.requireMembership(ctx, msg.ConversationID, userID); err != nil {
 		return "", ae.Internal(err)
@@ -601,7 +590,6 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 
 	msg := msgWithMeta.Message
 	convHex := hex.EncodeToString(msg.ConversationID)
-	senderHex := hex.EncodeToString(msg.SenderID)
 
 	// Fan-out to members (pubsub)
 	if sender, err := s.userRepo.FindByID(ctx, msg.SenderID); err != nil {
@@ -634,7 +622,7 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 		s.logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
 	} else {
 		for _, mID := range members {
-			if hex.EncodeToString(mID) == senderHex {
+			if bytes.Equal(mID, msg.SenderID) {
 				continue // skip sender
 			}
 			if s.roomViewer != nil && s.roomViewer.IsViewing(mID, msg.ConversationID) {
@@ -723,6 +711,17 @@ func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([
 	return members, false, nil
 }
 
+func (s *MessageService) getMessageRequired(ctx context.Context, msgID []byte) (*model.Message, error) {
+	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
+	if err != nil {
+		return nil, ae.Internal(err)
+	}
+	if msg == nil {
+		return nil, ae.New(ae.ErrMessageNotFound, "Message not found")
+	}
+	return msg, nil
+}
+
 func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
 	isMember, hit, err := s.cache.IsMember(ctx, convID, senderUID)
 	if err == nil && hit {
@@ -734,14 +733,8 @@ func (s *MessageService) requireMembership(ctx context.Context, convID, senderUI
 	}
 
 	// Fallback db
-	role, err := s.roomRepo.GetMemberRole(ctx, convID, senderUID)
-	if err != nil {
-		return ae.Internal(err)
-	}
-	if role == 0 {
-		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
-	}
-	return nil
+	_, err = s.getMemberRoleRequired(ctx, convID, senderUID)
+	return err
 }
 
 func (s *MessageService) getMemberRoleRequired(ctx context.Context, convID, userID []byte) (model.MemberRole, error) {

@@ -12,10 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type ControlPublisher interface {
-	PublishChannel(context.Context, string, []byte) error
-}
-
 type BulkPresenceReader interface {
 	BulkIsOnline(context.Context, [][]byte) (map[string]bool, error)
 }
@@ -90,72 +86,47 @@ func (s *UserService) UpdateUser(ctx context.Context, userID []byte, update *mod
 }
 
 func (s *UserService) Search(ctx context.Context, uid []byte, q string, cursor *string, limit int) (*ResultPage[*model.SearchUser], error) {
-	const maxLimit = 50
-	if limit <= 0 || limit > maxLimit {
-		limit = maxLimit
-	}
-	fetch := limit + 1
-
-	row, err := s.userRepo.SearchUsers(ctx, uid, q, cursor, fetch)
+	limit = normalizePageLimit(limit)
+	rows, err := s.userRepo.SearchUsers(ctx, uid, q, cursor, limit+1)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
-
-	hasMore := len(row) == fetch
-	if hasMore {
-		row = row[:limit]
-	}
-
-	nextCursor := ""
-	if hasMore {
-		last := row[len(row)-1]
-		username := last.Username
-		nextCursor = username
-	}
-	if row == nil {
-		row = []*model.SearchUser{}
-	}
-
-	return &ResultPage[*model.SearchUser]{
-		Items:      row,
-		HasMore:    hasMore,
-		NextCursor: &nextCursor,
-	}, nil
+	return assembleUserPage(rows, limit), nil
 }
 
 func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetUID []byte) (model.ContactRequestResult, error) {
 	if bytes.Equal(senderUID, targetUID) {
-		return model.ContactRequestResult(""), ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
+		return "", ae.New(ae.ErrInvalidInput, "cannot send request to yourself")
 	}
 
 	existing, err := s.userRepo.CheckUserExists(ctx, targetUID)
 	if err != nil {
-		return model.ContactRequestResult(""), ae.Internal(err)
+		return "", ae.Internal(err)
 	}
 	if !existing {
-		return model.ContactRequestResult(""), ae.NotFound("user not found")
+		return "", ae.NotFound("user not found")
 	}
 
 	pairs, err := s.userRepo.GetContactPair(ctx, senderUID, targetUID)
 	if err != nil {
-		return model.ContactRequestResult(""), ae.Internal(err)
+		return "", ae.Internal(err)
 	}
 
 	for _, p := range pairs {
 		switch {
 		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusBlocked:
-			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
+			return "", ae.New(ae.ErrCannotSendContactRequest, "you have blocked this user")
 		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusBlocked:
-			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
+			return "", ae.New(ae.ErrCannotSendContactRequest, "you cannot send request to this user")
 		case p.Status == model.ContactStatusAccepted:
-			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "already friends")
+			return "", ae.New(ae.ErrCannotSendContactRequest, "already friends")
 		case bytes.Equal(p.UserID, senderUID) && p.Status == model.ContactStatusPending:
-			return model.ContactRequestResult(""), ae.New(ae.ErrCannotSendContactRequest, "request already sent")
+			return "", ae.New(ae.ErrCannotSendContactRequest, "request already sent")
 		case bytes.Equal(p.ContactID, senderUID) && p.Status == model.ContactStatusPending:
 			// Đối phương đã gửi request → auto-accept.
 			_, err := s.userRepo.UpdateContactStatus(ctx, p.ID, model.ContactStatusAccepted)
 			if err != nil {
-				return model.ContactRequestResult(""), ae.Internal(err)
+				return "", ae.Internal(err)
 			}
 			s.publishContactAccepted(ctx, senderUID, targetUID)
 			return model.ContactRequestResultAccepted, nil
@@ -164,7 +135,7 @@ func (s *UserService) SendContactRequest(ctx context.Context, senderUID, targetU
 
 	// Tạo mới request
 	if err := s.userRepo.CreateContactRequest(ctx, senderUID, targetUID); err != nil {
-		return model.ContactRequestResult(""), ae.Internal(err)
+		return "", ae.Internal(err)
 	}
 	return model.ContactRequestResultPending, nil
 }
@@ -196,63 +167,35 @@ func (s *UserService) AcceptContactRequest(ctx context.Context, currentUID, send
 }
 
 func (s *UserService) GetContacts(ctx context.Context, userID []byte, cursor *string, limit int) (*ResultPage[*model.SearchUser], error) {
-	const maxLimit = 50
-	if limit <= 0 || limit > maxLimit {
-		limit = maxLimit
-	}
-	fetch := limit + 1
-
-	rows, err := s.userRepo.GetAcceptedContacts(ctx, userID, cursor, fetch)
+	limit = normalizePageLimit(limit)
+	rows, err := s.userRepo.GetAcceptedContacts(ctx, userID, cursor, limit+1)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
-
-	hasMore := len(rows) == fetch
-	if hasMore {
-		rows = rows[:limit]
-	}
-
-	nextCursor := ""
-	if hasMore {
-		last := rows[len(rows)-1]
-		username := last.Username
-		nextCursor = username
-	}
-	if rows == nil {
-		rows = []*model.SearchUser{}
-	}
-	s.attachOnlineStatus(ctx, rows)
-	s.publishContactSet(ctx, userID, rows)
-
-	return &ResultPage[*model.SearchUser]{
-		Items:      rows,
-		HasMore:    hasMore,
-		NextCursor: &nextCursor,
-	}, nil
+	page := assembleUserPage(rows, limit)
+	s.attachOnlineStatus(ctx, page.Items)
+	s.publishContactSet(ctx, userID, page.Items)
+	return page, nil
 }
 
 func (s *UserService) GetIncomingContactRequests(ctx context.Context, userID []byte, cursor *string, limit int) (*ResultPage[*model.SearchUser], error) {
-	const maxLimit = 50
-	if limit <= 0 || limit > maxLimit {
-		limit = maxLimit
-	}
-	fetch := limit + 1
-
-	rows, err := s.userRepo.GetIncomingRequests(ctx, userID, cursor, fetch)
+	limit = normalizePageLimit(limit)
+	rows, err := s.userRepo.GetIncomingRequests(ctx, userID, cursor, limit+1)
 	if err != nil {
 		return nil, ae.Internal(err)
 	}
+	return assembleUserPage(rows, limit), nil
+}
 
-	hasMore := len(rows) == fetch
+func assembleUserPage(rows []*model.SearchUser, limit int) *ResultPage[*model.SearchUser] {
+	hasMore := len(rows) == limit+1
 	if hasMore {
 		rows = rows[:limit]
 	}
 
 	nextCursor := ""
 	if hasMore {
-		last := rows[len(rows)-1]
-		username := last.Username
-		nextCursor = username
+		nextCursor = rows[len(rows)-1].Username
 	}
 	if rows == nil {
 		rows = []*model.SearchUser{}
@@ -262,7 +205,7 @@ func (s *UserService) GetIncomingContactRequests(ctx context.Context, userID []b
 		Items:      rows,
 		HasMore:    hasMore,
 		NextCursor: &nextCursor,
-	}, nil
+	}
 }
 
 func (s *UserService) attachOnlineStatus(ctx context.Context, rows []*model.SearchUser) {
@@ -294,7 +237,7 @@ func (s *UserService) publishContactSet(ctx context.Context, userID []byte, rows
 			userIDs = append(userIDs, row.ID)
 		}
 	}
-	s.publishContactSysEvent(ctx, userID, contactSysEvent{
+	publishControlEvent(ctx, s.controls, s.logger, userID, contactSysEvent{
 		Type:    sysContactsSet,
 		UserIDs: userIDs,
 	})
@@ -303,33 +246,12 @@ func (s *UserService) publishContactSet(ctx context.Context, userID []byte, rows
 func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []byte) {
 	uid1Hex := hex.EncodeToString(uid1)
 	uid2Hex := hex.EncodeToString(uid2)
-	s.publishContactSysEvent(ctx, uid1, contactSysEvent{
+	publishControlEvent(ctx, s.controls, s.logger, uid1, contactSysEvent{
 		Type:   sysContactsAdd,
 		UserID: uid2Hex,
 	})
-	s.publishContactSysEvent(ctx, uid2, contactSysEvent{
+	publishControlEvent(ctx, s.controls, s.logger, uid2, contactSysEvent{
 		Type:   sysContactsAdd,
 		UserID: uid1Hex,
 	})
-}
-
-func (s *UserService) publishContactSysEvent(ctx context.Context, userID []byte, evt contactSysEvent) {
-	if s.controls == nil {
-		return
-	}
-	payload, err := json.Marshal(evt)
-	if err != nil {
-		s.logger.Warn("userService.publishContactSysEvent: failed to marshal event", zap.Error(err))
-		return
-	}
-	go func(parent context.Context) {
-		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
-		defer cancel()
-		if err := s.controls.PublishChannel(publishCtx, "sys:"+hex.EncodeToString(userID), payload); err != nil {
-			s.logger.Warn("userService.publishContactSysEvent: failed to publish event",
-				zap.String("user_id", hex.EncodeToString(userID)),
-				zap.Error(err),
-			)
-		}
-	}(ctx)
 }

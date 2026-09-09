@@ -73,13 +73,6 @@ type RoomService struct {
 	logger    *zap.Logger
 }
 
-type ResultPage[T any] struct {
-	Items      []T     `json:"items"`
-	NextCursor *string `json:"nextCursor"`
-	HasMore    bool    `json:"hasMore"`
-	Limit      int     `json:"limit"`
-}
-
 const (
 	sysConvSubscribe   = "conv.subscribe"
 	sysConvUnsubscribe = "conv.unsubscribe"
@@ -308,10 +301,7 @@ func buildGroupMemberships(convID []byte, allMemberIDs [][]byte) []*model.Conver
 
 func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor *string, limit int) (*ResultPage[*model.ConversationListRow], error) {
 	// Không cache vì các trường thay đổi thường xuyên (last_message_at, v.v.) và có phân trang
-	const maxLimit = 50
-	if limit <= 0 || limit > maxLimit {
-		limit = maxLimit
-	}
+	limit = normalizePageLimit(limit)
 	fetch := int32(limit) + 1 // Lấy dư 1 bản ghi để xác định hasNext
 
 	var (
@@ -343,7 +333,7 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 	if err != nil {
 		unreadMap = map[string]int64{} // Fallback nếu cache lỗi
 	}
-	for i, c := range convs {
+	for _, c := range convs {
 		cidHex := hex.EncodeToString(c.ID)
 		unread, hit := unreadMap[cidHex]
 		if hit {
@@ -362,7 +352,6 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 				}
 			}(ctx, c.ID, uid, unread)
 		}
-		convs[i] = c
 	}
 	s.attachConversationPresence(ctx, uid, convs)
 
@@ -658,7 +647,7 @@ func (s *RoomService) insertSystemMessageFallback(parent context.Context, payloa
 }
 
 func (s *RoomService) publishConvSubscribe(ctx context.Context, userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(ctx, userID, conversationSysEvent{
+	publishControlEvent(ctx, s.controls, s.logger, userID, conversationSysEvent{
 		Type:    sysConvSubscribe,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: payload,
@@ -666,33 +655,11 @@ func (s *RoomService) publishConvSubscribe(ctx context.Context, userID, convID [
 }
 
 func (s *RoomService) publishConvUnsubscribe(ctx context.Context, userID, convID []byte, payload json.RawMessage) {
-	s.publishConversationSysEvent(ctx, userID, conversationSysEvent{
+	publishControlEvent(ctx, s.controls, s.logger, userID, conversationSysEvent{
 		Type:    sysConvUnsubscribe,
 		ConvID:  hex.EncodeToString(convID),
 		Payload: payload,
 	})
-}
-
-func (s *RoomService) publishConversationSysEvent(ctx context.Context, userID []byte, evt conversationSysEvent) {
-	if s.controls == nil {
-		return
-	}
-	payload, err := json.Marshal(evt)
-	if err != nil {
-		s.logger.Warn("roomService.publishConversationSysEvent: failed to marshal event", zap.Error(err))
-		return
-	}
-
-	go func(parent context.Context) {
-		publishCtx, cancel := detachedContext(parent, sideEffectTimeout)
-		defer cancel()
-		if err := s.controls.PublishChannel(publishCtx, "sys:"+hex.EncodeToString(userID), payload); err != nil {
-			s.logger.Warn("roomService.publishConversationSysEvent: failed to publish event",
-				zap.String("user_id", hex.EncodeToString(userID)),
-				zap.Error(err),
-			)
-		}
-	}(ctx)
 }
 
 func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID []byte, convs []*model.ConversationListRow) {

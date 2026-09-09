@@ -287,8 +287,7 @@ func (s *AuthService) createLoginSession(
 		return nil, ar.Internal(err)
 	}
 
-	expireDuration := s.sessionTTL
-	if err := s.sessions.Set(ctx, jti, user.ID, expireDuration); err != nil {
+	if err := s.sessions.Set(ctx, jti, user.ID, s.sessionTTL); err != nil {
 		s.logger.Warn("Failed to set session in cache", zap.Error(err))
 	}
 
@@ -387,6 +386,7 @@ func (s *AuthService) loadActiveTokenUser(ctx context.Context, userID []byte) (*
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
+	var user model.User
 	if cached == "" {
 		userDB, err := s.userRepo.FindByID(ctx, userID)
 		if err != nil {
@@ -395,6 +395,7 @@ func (s *AuthService) loadActiveTokenUser(ctx context.Context, userID []byte) (*
 		if userDB == nil {
 			return nil, ar.New(ar.ErrUserNotFound, "User not found")
 		}
+		user = *userDB
 
 		userJSON, err := json.Marshal(userDB)
 		if err != nil {
@@ -406,10 +407,7 @@ func (s *AuthService) loadActiveTokenUser(ctx context.Context, userID []byte) (*
 		if err := s.userCache.WarmUser(ctx, userID, cached); err != nil {
 			s.logger.Warn("Failed to cache user status", zap.Error(err))
 		}
-	}
-
-	var user model.User
-	if err := json.Unmarshal([]byte(cached), &user); err != nil {
+	} else if err := json.Unmarshal([]byte(cached), &user); err != nil {
 		return nil, ar.Internal(err)
 	}
 
