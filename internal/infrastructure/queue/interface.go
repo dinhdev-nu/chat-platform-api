@@ -65,6 +65,7 @@ type ConversationLastActivityPayload struct {
 	MessageID      []byte    `json:"messageId"`
 	MessageText    *string   `json:"messageText,omitempty"`
 	ActivityAt     time.Time `json:"activityAt"`
+	PreviewOnly    bool      `json:"previewOnly,omitempty"`
 }
 
 type ConversationSystemMessagePayload struct {

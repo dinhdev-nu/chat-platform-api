@@ -35,7 +35,7 @@ func (h *ConversationLastActivityHandler) Handle(ctx context.Context, job queue.
 		h.logger.Error("conversation.last_activity: invalid payload", zap.String("jobID", job.ID), zap.Error(err))
 		return nil
 	}
-	if len(payload.ConversationID) != 16 || len(payload.MessageID) != 16 || payload.ActivityAt.IsZero() {
+	if len(payload.ConversationID) != 16 || len(payload.MessageID) != 16 || (!payload.PreviewOnly && payload.ActivityAt.IsZero()) {
 		h.logger.Error("conversation.last_activity: invalid IDs",
 			zap.String("jobID", job.ID),
 			zap.Int("conversationIDLen", len(payload.ConversationID)),
@@ -44,7 +44,13 @@ func (h *ConversationLastActivityHandler) Handle(ctx context.Context, job queue.
 		return nil
 	}
 
-	if err := h.roomRepo.UpdateConversationLastActivity(ctx, payload.ConversationID, payload.MessageID, payload.MessageText, payload.ActivityAt); err != nil {
+	var err error
+	if payload.PreviewOnly {
+		err = h.roomRepo.RefreshConversationLastMessage(ctx, payload.ConversationID, payload.MessageID)
+	} else {
+		err = h.roomRepo.UpdateConversationLastActivity(ctx, payload.ConversationID, payload.MessageID, payload.MessageText, payload.ActivityAt)
+	}
+	if err != nil {
 		return fmt.Errorf("conversation.last_activity: update %s/%s: %w",
 			hex.EncodeToString(payload.ConversationID),
 			hex.EncodeToString(payload.MessageID),

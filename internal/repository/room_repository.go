@@ -26,6 +26,7 @@ type RoomRepository interface {
 	CreateConversation(ctx context.Context, conv *model.Conversation) error
 
 	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
+	RefreshConversationLastMessage(ctx context.Context, convID, msgID []byte) error
 	UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error
 
 	ListConversations(ctx context.Context, userID []byte, cursorTS *time.Time, cursorID []byte, limit int32) ([]*model.ConversationListRow, error)

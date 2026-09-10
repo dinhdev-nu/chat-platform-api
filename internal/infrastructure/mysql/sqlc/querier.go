@@ -44,8 +44,11 @@ type Querier interface {
 	ListMessagesNextPage(ctx context.Context, arg ListMessagesNextPageParams) ([]Message, error)
 	// Serialize membership writes and cache fills on the same conversation.
 	LockConversationMembership(ctx context.Context, id []byte) ([]byte, error)
+	// Editing/deleting changes the preview only when this is still the last message.
+	RefreshConversationLastMessage(ctx context.Context, arg RefreshConversationLastMessageParams) error
 	SoftDeleteMessage(ctx context.Context, id []byte) error
-	// Updated by the Redis Streams worker, or synchronously by the service fallback.
+	// Read current content and message ordering so delayed jobs cannot restore old text
+	// or promote an older message. The ordering matches message history pagination.
 	UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error
 	UpdateLastReadAt(ctx context.Context, arg UpdateLastReadAtParams) error
 	UpdateMessageContent(ctx context.Context, arg UpdateMessageContentParams) (int64, error)

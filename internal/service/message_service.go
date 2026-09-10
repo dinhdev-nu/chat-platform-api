@@ -35,6 +35,7 @@ type MessageUsers interface {
 	FindByID(ctx context.Context, id []byte) (*model.User, error)
 }
 type MessageRooms interface {
+	RefreshConversationLastMessage(ctx context.Context, convID, msgID []byte) error
 	UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error
 	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
 	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
@@ -155,7 +156,9 @@ func (s *MessageService) Send(ctx context.Context, cmd SendMessageCommand) (*mod
 		attachment.CreatedAt = now
 	}
 	result := &model.MessageWithMeta{Message: msg, Attachments: cmd.Attachments, Reactions: []*model.MessageReaction{}}
-	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content, msg.CreatedAt)
+	s.enqueueConversationUpdate(ctx, queue.ConversationLastActivityPayload{
+		ConversationID: msg.ConversationID, MessageID: msg.ID, MessageText: msg.Content, ActivityAt: msg.CreatedAt,
+	})
 	// afterSend enriches sender metadata; it must not mutate the returned metadata.
 	outgoing := *result
 	go s.afterSend(ctx, &outgoing)
@@ -479,7 +482,9 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 		return nil, ae.New(ae.ErrCannotEditMessage, "Edit window expired (24h) or message not found")
 	}
 
-	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, msg.Content, msg.UpdatedAt)
+	s.enqueueConversationUpdate(ctx, queue.ConversationLastActivityPayload{
+		ConversationID: msg.ConversationID, MessageID: msg.ID, PreviewOnly: true,
+	})
 
 	sender, _ := s.userRepo.FindByID(ctx, msg.SenderID)
 	raw := presenter.MessageEditedPayload(msg, sender)
@@ -521,8 +526,9 @@ func (s *MessageService) DeleteMessage(ctx context.Context, userID, msgID []byte
 		return ae.Internal(err)
 	}
 
-	msgText := "Message deleted"
-	s.enqueueConversationLastActivity(ctx, msg.ConversationID, msg.ID, &msgText, s.now())
+	s.enqueueConversationUpdate(ctx, queue.ConversationLastActivityPayload{
+		ConversationID: msg.ConversationID, MessageID: msg.ID, PreviewOnly: true,
+	})
 
 	raw := presenter.MessageDeletedPayload(msg.ConversationID, msgID, s.now())
 	if len(raw) == 0 {
@@ -639,19 +645,13 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	}
 }
 
-func (s *MessageService) enqueueConversationLastActivity(parent context.Context, convID, msgID []byte, text *string, activityAt time.Time) {
-	payload := queue.ConversationLastActivityPayload{
-		ConversationID: convID,
-		MessageID:      msgID,
-		MessageText:    text,
-		ActivityAt:     activityAt,
-	}
+func (s *MessageService) enqueueConversationUpdate(parent context.Context, payload queue.ConversationLastActivityPayload) {
 	if s.jobs == nil {
 		s.logger.Warn("messageService: stream unavailable for conversation last activity, applying sync fallback",
-			zap.String("conv_id", hex.EncodeToString(convID)),
-			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.String("conv_id", hex.EncodeToString(payload.ConversationID)),
+			zap.String("msg_id", hex.EncodeToString(payload.MessageID)),
 		)
-		s.updateConversationLastActivityFallback(parent, convID, msgID, text, activityAt)
+		s.updateConversationFallback(parent, payload)
 		return
 	}
 
@@ -660,26 +660,27 @@ func (s *MessageService) enqueueConversationLastActivity(parent context.Context,
 	cancel()
 	if err != nil {
 		s.logger.Warn("messageService: enqueue conversation last activity failed, applying sync fallback",
-			zap.String("conv_id", hex.EncodeToString(convID)),
-			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.String("conv_id", hex.EncodeToString(payload.ConversationID)),
+			zap.String("msg_id", hex.EncodeToString(payload.MessageID)),
 			zap.Error(err),
 		)
-		s.updateConversationLastActivityFallback(parent, convID, msgID, text, activityAt)
+		s.updateConversationFallback(parent, payload)
 	}
 }
 
-func (s *MessageService) updateConversationLastActivityFallback(
-	parent context.Context,
-	convID, msgID []byte,
-	text *string,
-	activityAt time.Time,
-) {
+func (s *MessageService) updateConversationFallback(parent context.Context, payload queue.ConversationLastActivityPayload) {
 	fallbackCtx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
-	if fallbackErr := s.roomRepo.UpdateConversationLastActivity(fallbackCtx, convID, msgID, text, activityAt); fallbackErr != nil {
+	var fallbackErr error
+	if payload.PreviewOnly {
+		fallbackErr = s.roomRepo.RefreshConversationLastMessage(fallbackCtx, payload.ConversationID, payload.MessageID)
+	} else {
+		fallbackErr = s.roomRepo.UpdateConversationLastActivity(fallbackCtx, payload.ConversationID, payload.MessageID, payload.MessageText, payload.ActivityAt)
+	}
+	if fallbackErr != nil {
 		s.logger.Error("messageService: sync fallback update last activity failed",
-			zap.String("conv_id", hex.EncodeToString(convID)),
-			zap.String("msg_id", hex.EncodeToString(msgID)),
+			zap.String("conv_id", hex.EncodeToString(payload.ConversationID)),
+			zap.String("msg_id", hex.EncodeToString(payload.MessageID)),
 			zap.Error(fallbackErr),
 		)
 	}

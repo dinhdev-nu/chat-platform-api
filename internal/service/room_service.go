@@ -340,7 +340,10 @@ func (s *RoomService) ListConversations(ctx context.Context, uid []byte, cursor 
 		if hit {
 			c.UnreadCount = unread
 		} else {
-			unread, _ := s.msgRepo.GetUnreadCountByWatermark(ctx, uid, c.ID)
+			unread, err := s.msgRepo.GetUnreadCountByWatermark(ctx, uid, c.ID)
+			if err != nil {
+				return nil, ae.Internal(err)
+			}
 			c.UnreadCount = unread
 			go func(parent context.Context, cid []byte, uid []byte, count int64) {
 				cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)

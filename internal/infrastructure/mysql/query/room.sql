@@ -101,10 +101,26 @@ WHERE conversation_id = ?;
 
 
 -- name: UpdateConversationLastActivity :exec
--- Updated by the Redis Streams worker, or synchronously by the service fallback.
-UPDATE conversations
-SET last_message_id = ?, last_message_text = ?, last_activity_at = ?, updated_at = NOW(3)
-WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at <= ?);
+-- Read current content and message ordering so delayed jobs cannot restore old text
+-- or promote an older message. The ordering matches message history pagination.
+UPDATE conversations c
+JOIN messages m ON m.conversation_id = c.id
+LEFT JOIN messages previous ON previous.id = c.last_message_id
+SET c.last_message_id = m.id,
+    c.last_message_text = CASE WHEN m.is_deleted = 1 THEN 'Message deleted' ELSE LEFT(m.content, 1000) END,
+    c.last_activity_at = GREATEST(COALESCE(c.last_activity_at, m.created_at), m.created_at),
+    c.updated_at = NOW(3)
+WHERE c.id = sqlc.arg(conversation_id) AND m.id = sqlc.arg(message_id)
+  AND (previous.id IS NULL OR m.created_at > previous.created_at
+       OR (m.created_at = previous.created_at AND m.seq >= previous.seq));
+
+-- name: RefreshConversationLastMessage :exec
+-- Editing/deleting changes the preview only when this is still the last message.
+UPDATE conversations c
+JOIN messages m ON m.id = c.last_message_id AND m.conversation_id = c.id
+SET c.last_message_text = CASE WHEN m.is_deleted = 1 THEN 'Message deleted' ELSE LEFT(m.content, 1000) END,
+    c.updated_at = NOW(3)
+WHERE c.id = sqlc.arg(conversation_id) AND c.last_message_id = sqlc.arg(message_id);
 
 -- name: GetUserConversationIDs :many
 -- Dùng khi WS connect: load toàn bộ conv user đang tham gia.
