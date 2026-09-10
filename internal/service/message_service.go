@@ -115,7 +115,13 @@ type SendMessageCommand struct {
 
 // Send is the common use case; the wrappers retain the existing handler contracts.
 func (s *MessageService) Send(ctx context.Context, cmd SendMessageCommand) (*model.MessageWithMeta, error) {
-	if len(cmd.Attachments) == 0 && cmd.Content == "" {
+	if cmd.Type < model.MessageTypeText || cmd.Type > model.MessageTypeVideo {
+		return nil, ae.ValidationError("Invalid message type")
+	}
+	if cmd.Type != model.MessageTypeText && len(cmd.Attachments) == 0 {
+		return nil, ae.ValidationError("Media messages require an attachment")
+	}
+	if len(cmd.Attachments) == 0 && strings.TrimSpace(cmd.Content) == "" {
 		return nil, ae.ValidationError("Message content cannot be empty")
 	}
 	for _, attachment := range cmd.Attachments {
@@ -288,7 +294,8 @@ func indexMessageRelations(rows []*model.Message) messageRelationIDs {
 				ids.senders = append(ids.senders, msg.SenderID)
 			}
 		}
-		if msg.Type != model.MessageTypeText && msg.Type != model.MessageTypeSystem {
+		// Text messages can also carry attachments, including existing messages.
+		if msg.Type != model.MessageTypeSystem {
 			ids.attachments = append(ids.attachments, msg.ID)
 		}
 	}
