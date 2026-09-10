@@ -436,6 +436,16 @@ type ListFriendsNextPageParams struct {
 // Base builder
 // ─────────────────────────────────────────────
 
+func (r *userRepo) GetAcceptedContactIDs(ctx context.Context, userID []byte) ([][]byte, error) {
+	var ids [][]byte
+	err := listFriendsBaseQuery(r.db.WithContext(ctx), userID).
+		Select("u.id").Pluck("u.id", &ids).Error
+	if err != nil {
+		return nil, fmt.Errorf("userRepo.GetAcceptedContactIDs: %w", err)
+	}
+	return ids, nil
+}
+
 func listFriendsBaseQuery(db *gorm.DB, currentUserID []byte) *gorm.DB {
 	return db.Table("users AS u").
 		Select("u.id, u.username, u.avatar_url, u.bio, u.last_seen_at").

@@ -32,24 +32,30 @@ var upgrader = gorillaws.Upgrader{
 }
 
 type Handler struct {
-	hub *Hub
-	rm  *RoomManager
-	mr  messageReadMarker
-	rr  r.RoomRepository
-	log *zap.Logger
+	hub      *Hub
+	rm       *RoomManager
+	mr       messageReadMarker
+	rr       r.RoomRepository
+	contacts contactReader
+	log      *zap.Logger
+}
+
+type contactReader interface {
+	GetAcceptedContactIDs(context.Context, []byte) ([][]byte, error)
 }
 
 type messageReadMarker interface {
 	MarkAsRead(ctx context.Context, convID, userID, lastReadMsgID []byte) error
 }
 
-func NewHandler(hub *Hub, rm *RoomManager, mr messageReadMarker, rr r.RoomRepository, log *zap.Logger) *Handler {
+func NewHandler(hub *Hub, rm *RoomManager, mr messageReadMarker, rr r.RoomRepository, contacts contactReader, log *zap.Logger) *Handler {
 	return &Handler{
-		hub: hub,
-		rm:  rm,
-		mr:  mr,
-		rr:  rr,
-		log: log,
+		hub:      hub,
+		rm:       rm,
+		mr:       mr,
+		rr:       rr,
+		contacts: contacts,
+		log:      log,
 	}
 }
 
@@ -71,6 +77,12 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
 		return
 	}
+	contactIDs, err := h.contacts.GetAcceptedContactIDs(ctx, user.ID)
+	if err != nil {
+		h.log.Error("failed to load user contacts", zap.Error(err))
+		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
+		return
+	}
 	// Upgrade HTTP connection lên WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -78,6 +90,11 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		return
 	}
 	client := NewClient(user.ID, conn, h.hub, h.rm, h.mr, h.hub.rdb, convIDs, h.log)
+	contactHexes := make([]string, len(contactIDs))
+	for i, id := range contactIDs {
+		contactHexes[i] = hex.EncodeToString(id)
+	}
+	client.setContacts(contactHexes)
 	becameOnline := false
 	// SET presence via centralized PresenceStore
 	presenceCtx, cancelPresence := context.WithTimeout(ctx, redisOperationTimeout)

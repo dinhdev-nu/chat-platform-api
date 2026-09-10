@@ -24,6 +24,7 @@ type UserRepository interface {
 	CreateContactRequest(ctx context.Context, userID, contactID []byte) error
 	GetContactRecord(ctx context.Context, userID, contactID []byte) (*model.UserContact, error)
 	GetAcceptedContacts(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
+	GetAcceptedContactIDs(ctx context.Context, userID []byte) ([][]byte, error)
 	GetIncomingRequests(ctx context.Context, userID []byte, cursor *string, limit int) ([]*model.SearchUser, error)
 }
 

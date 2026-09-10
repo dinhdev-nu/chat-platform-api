@@ -37,14 +37,12 @@ type UserService struct {
 }
 
 const (
-	sysContactsSet = "contacts.set"
 	sysContactsAdd = "contacts.add"
 )
 
 type contactSysEvent struct {
-	Type    string   `json:"type"`
-	UserID  string   `json:"user_id,omitempty"`
-	UserIDs []string `json:"user_ids,omitempty"`
+	Type   string `json:"type"`
+	UserID string `json:"user_id,omitempty"`
 }
 
 func NewUserService(d UserDependencies) *UserService {
@@ -174,7 +172,6 @@ func (s *UserService) GetContacts(ctx context.Context, userID []byte, cursor *st
 	}
 	page := assembleUserPage(rows, limit)
 	s.attachOnlineStatus(ctx, page.Items)
-	s.publishContactSet(ctx, userID, page.Items)
 	return page, nil
 }
 
@@ -228,19 +225,6 @@ func (s *UserService) attachOnlineStatus(ctx context.Context, rows []*model.Sear
 		isOnline := onlineByID[row.ID]
 		row.IsOnline = &isOnline
 	}
-}
-
-func (s *UserService) publishContactSet(ctx context.Context, userID []byte, rows []*model.SearchUser) {
-	userIDs := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if row.ID != "" {
-			userIDs = append(userIDs, row.ID)
-		}
-	}
-	publishControlEvent(ctx, s.controls, s.logger, userID, contactSysEvent{
-		Type:    sysContactsSet,
-		UserIDs: userIDs,
-	})
 }
 
 func (s *UserService) publishContactAccepted(ctx context.Context, uid1, uid2 []byte) {
