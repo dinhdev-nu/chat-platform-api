@@ -3,9 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/dinhdev-nu/chat-platform-api/internal/dto"
@@ -42,9 +44,9 @@ type AuthUserCache interface {
 	GetUser(context.Context, []byte) (string, error)
 }
 type OTPStore interface {
-	Issue(context.Context, string, string) (model.OTPStatus, error)
+	Issue(ctx context.Context, email, code, issuanceID string) (model.OTPStatus, error)
 	Verify(context.Context, string, string) (model.OTPVerification, error)
-	ClearSendState(context.Context, string, string) error
+	ClearSendState(ctx context.Context, email, issuanceID string) error
 }
 type TokenUsageThrottle interface {
 	ShouldRecord(context.Context, []byte) (bool, error)
@@ -100,12 +102,19 @@ func NewAuthService(d AuthDependencies) *AuthService {
 	}
 }
 
+// Keep the same case-insensitive email identity for Redis, delivery and user lookup.
+func normalizeAuthEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
 func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto.SendOTPResponse, error) {
+	req.Email = normalizeAuthEmail(req.Email)
 	otp, err := crypto.GenerateOTP()
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
-	status, err := s.otp.Issue(ctx, req.Email, otp)
+	issuanceID := rand.Text()
+	status, err := s.otp.Issue(ctx, req.Email, otp, issuanceID)
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
@@ -135,7 +144,7 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		cleanupCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
 		defer cancel()
 
-		if cleanupErr := s.otp.ClearSendState(cleanupCtx, req.Email, otp); cleanupErr != nil {
+		if cleanupErr := s.otp.ClearSendState(cleanupCtx, req.Email, issuanceID); cleanupErr != nil {
 			s.logger.Warn("failed to cleanup OTP send state",
 				zap.String("email", req.Email),
 				zap.String("reason", reason),
@@ -163,6 +172,7 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 }
 
 func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, ip string) (*dto.LoginResponse, error) {
+	req.Email = normalizeAuthEmail(req.Email)
 	if err := s.verifyOTPCode(ctx, req.Email, req.OTP); err != nil {
 		return nil, err
 	}
