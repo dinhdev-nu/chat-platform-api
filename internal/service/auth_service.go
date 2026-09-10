@@ -42,15 +42,9 @@ type AuthUserCache interface {
 	GetUser(context.Context, []byte) (string, error)
 }
 type OTPStore interface {
-	IsLocked(context.Context, string) (bool, error)
-	CanResend(context.Context, string) (bool, error)
-	Set(context.Context, string, string) error
-	SetResendLimit(context.Context, string) error
-	ClearSendState(context.Context, string) error
-	Get(context.Context, string) (string, error)
-	IncrAttempts(context.Context, string) (int64, error)
-	Lock(context.Context, string) error
-	Delete(context.Context, string) error
+	Issue(context.Context, string, string) (model.OTPStatus, error)
+	Verify(context.Context, string, string) (model.OTPVerification, error)
+	ClearSendState(context.Context, string, string) error
 }
 type TokenUsageThrottle interface {
 	ShouldRecord(context.Context, []byte) (bool, error)
@@ -107,39 +101,28 @@ func NewAuthService(d AuthDependencies) *AuthService {
 }
 
 func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto.SendOTPResponse, error) {
-	locked, err := s.otp.IsLocked(ctx, req.Email)
-	if err != nil {
-		return nil, ar.Internal(err)
-	}
-	if locked {
-		return nil, ar.New(
-			ar.ErrTooManyRequests,
-			"Account temporarily locked due to too many failed attempts. Try again in 15 minutes",
-		)
-	}
-
-	canResend, err := s.otp.CanResend(ctx, req.Email)
-	if err != nil {
-		return nil, ar.Internal(err)
-	}
-	if !canResend {
-		return nil, ar.New(
-			ar.ErrTooManyRequests,
-			"Please wait 1 minute before requesting another OTP",
-		)
-	}
-
 	otp, err := crypto.GenerateOTP()
 	if err != nil {
 		return nil, ar.Internal(err)
 	}
-
-	if err := s.otp.Set(ctx, req.Email, otp); err != nil {
+	status, err := s.otp.Issue(ctx, req.Email, otp)
+	if err != nil {
 		return nil, ar.Internal(err)
 	}
-
-	if err := s.otp.SetResendLimit(ctx, req.Email); err != nil {
-		return nil, ar.Internal(err)
+	switch status {
+	case model.OTPLocked:
+		return nil, ar.New(
+			ar.ErrTooManyRequests,
+			"Account temporarily locked due to too many failed attempts. Try again in 15 minutes",
+		)
+	case model.OTPCooldown:
+		return nil, ar.New(
+			ar.ErrTooManyRequests,
+			"Please wait 1 minute before requesting another OTP",
+		)
+	case model.OTPOK:
+	default:
+		return nil, ar.Internal(fmt.Errorf("unexpected OTP issue status: %d", status))
 	}
 
 	payload := queue.SendOTPEmailPayload{
@@ -152,7 +135,7 @@ func (s *AuthService) SendOTP(ctx context.Context, req dto.SendOTPRequest) (*dto
 		cleanupCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
 		defer cancel()
 
-		if cleanupErr := s.otp.ClearSendState(cleanupCtx, req.Email); cleanupErr != nil {
+		if cleanupErr := s.otp.ClearSendState(cleanupCtx, req.Email, otp); cleanupErr != nil {
 			s.logger.Warn("failed to cleanup OTP send state",
 				zap.String("email", req.Email),
 				zap.String("reason", reason),
@@ -196,44 +179,26 @@ func (s *AuthService) VerifyOTP(ctx context.Context, req dto.VerifyOTPRequest, i
 }
 
 func (s *AuthService) verifyOTPCode(ctx context.Context, email, submittedOTP string) error {
-	locked, err := s.otp.IsLocked(ctx, email)
+	result, err := s.otp.Verify(ctx, email, submittedOTP)
 	if err != nil {
 		return ar.Internal(err)
 	}
-	if locked {
+	switch result.Status {
+	case model.OTPOK:
+		return nil
+	case model.OTPLocked:
 		return ar.New(
 			ar.ErrTooManyRequests,
 			"Account temporarily locked due to too many failed attempts. Try again in 15 minutes",
 		)
-	}
-
-	stored, err := s.otp.Get(ctx, email)
-	if err != nil {
-		return ar.Internal(err)
-	}
-	if stored == "" {
+	case model.OTPExpired:
 		return ar.New(ar.ErrInvalidRequest, "OTP expired or not found")
-	}
-
-	if stored != submittedOTP {
-		attempts, err := s.otp.IncrAttempts(ctx, email)
-		if err != nil {
-			return ar.Internal(err)
-		}
-		if attempts >= 5 {
-			if err := s.otp.Lock(ctx, email); err != nil {
-				return ar.Internal(err)
-			}
-		}
-
+	case model.OTPInvalid:
 		return ar.New(ar.ErrInvalidCredentials,
-			fmt.Sprintf("Invalid OTP. You have %d attempts left", 5-attempts))
+			fmt.Sprintf("Invalid OTP. You have %d attempts left", result.AttemptsLeft))
+	default:
+		return ar.Internal(fmt.Errorf("unexpected OTP verification status: %d", result.Status))
 	}
-
-	if err := s.otp.Delete(ctx, email); err != nil {
-		return ar.Internal(err)
-	}
-	return nil
 }
 
 func (s *AuthService) createLoginSession(
@@ -288,7 +253,15 @@ func (s *AuthService) createLoginSession(
 	}
 
 	if err := s.sessions.Set(ctx, jti, user.ID, s.sessionTTL); err != nil {
-		s.logger.Warn("Failed to set session in cache", zap.Error(err))
+		cleanupCtx, cancel := detachedContext(ctx, sideEffectTimeout)
+		defer cancel()
+		if cleanupErr := s.sessions.Revoke(cleanupCtx, jti); cleanupErr != nil {
+			s.logger.Warn("failed to revoke incomplete login session", zap.Error(cleanupErr))
+		}
+		if cleanupErr := s.tokenRepo.DeleteByJTI(cleanupCtx, jti); cleanupErr != nil {
+			s.logger.Warn("failed to delete incomplete login token", zap.Error(cleanupErr))
+		}
+		return nil, ar.Internal(fmt.Errorf("create login session: %w", err))
 	}
 
 	return &dto.LoginResponse{
