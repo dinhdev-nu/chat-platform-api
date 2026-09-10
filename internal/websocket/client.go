@@ -267,7 +267,7 @@ func (c *Client) onTyping(payload json.RawMessage) {
 		return
 	}
 
-	convHex, _, ok := normalizeHexID(p.ConvID)
+	convHex, convID, ok := normalizeHexID(p.ConvID)
 	if !ok || !c.hasConv(convHex) {
 		c.log.Warn("ws typing for non-viewing conv",
 			zap.String("uid", c.uidHex),
@@ -278,6 +278,9 @@ func (c *Client) onTyping(payload json.RawMessage) {
 
 	ctx, cancel := c.hub.redisContext()
 	defer cancel()
+	if !c.hub.isMember(ctx, convID, c.uid) {
+		return
+	}
 	if err := c.rdb.Set(ctx, typingKey(convHex, c.uidHex), 1, typingTTL).Err(); err != nil {
 		c.log.Warn("ws typing ttl set failed",
 			zap.String("uid", c.uidHex),
@@ -310,6 +313,11 @@ func (c *Client) onViewing(payload json.RawMessage) {
 	}
 	convHex, cid, ok := normalizeHexID(p.ConvID)
 	if !ok || !c.hasConv(convHex) {
+		return
+	}
+	ctx, cancel := c.hub.redisContext()
+	defer cancel()
+	if !c.hub.isMember(ctx, cid, c.uid) {
 		return
 	}
 	c.rm.SetViewing(cid, c.uid, c.ConnID)

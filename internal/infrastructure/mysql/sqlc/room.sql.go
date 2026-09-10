@@ -399,6 +399,17 @@ func (q *Queries) ListConversationsNextPage(ctx context.Context, arg ListConvers
 	return items, nil
 }
 
+const lockConversationMembership = `-- name: LockConversationMembership :one
+SELECT id FROM conversations WHERE id = ? FOR UPDATE
+`
+
+// Serialize membership writes and cache fills on the same conversation.
+func (q *Queries) LockConversationMembership(ctx context.Context, id []byte) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, lockConversationMembership, id)
+	err := row.Scan(&id)
+	return id, err
+}
+
 const updateConversationLastActivity = `-- name: UpdateConversationLastActivity :exec
 UPDATE conversations
 SET last_message_id = ?, last_message_text = ?, last_activity_at = ?, updated_at = NOW(3)

@@ -39,12 +39,9 @@ type RoomMessages interface {
 type RoomCache interface {
 	GetUnreads(ctx context.Context, userID []byte, convIDs [][]byte) (map[string]int64, error)
 	SetUnread(ctx context.Context, userID, convID []byte, count int64) error
-	AddMember(ctx context.Context, convID, userID []byte) error
-	InvalidateMembers(ctx context.Context, convID []byte) error
-	RemoveMember(ctx context.Context, convID, userID []byte) error
+	UpdateMembership(ctx context.Context, convID []byte, apply func(context.Context, repository.ConversationMembers) error) error
 	DeleteUnread(ctx context.Context, userID, convID []byte) error
 	GetMembers(ctx context.Context, convID []byte) ([][]byte, error)
-	WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error
 }
 
 type RoomDependencies struct {
@@ -160,12 +157,14 @@ func (s *RoomService) CreateDM(ctx context.Context, currentUID, targetUserID []b
 			Role:           model.RoleMember,
 		},
 	}
-	if err := s.roomRepo.BatchInsertConversationMembers(ctx, members); err != nil {
+	if err := s.cache.UpdateMembership(ctx, convID, func(writeCtx context.Context, membersRepo repository.ConversationMembers) error {
+		return membersRepo.BatchInsertConversationMembers(writeCtx, members)
+	}); err != nil {
 		return nil, false, ae.Internal(err)
 	}
 
 	// Warm member cache
-	go s.warmMemberCache(ctx, convID, [][]byte{currentUID, targetUserID})
+	go s.warmMemberCache(ctx, convID)
 
 	conv, err := s.roomRepo.GetConversationByID(ctx, convID)
 	if err != nil {
@@ -221,12 +220,14 @@ func (s *RoomService) CreateGroup(ctx context.Context, currentUID []byte, req dt
 
 	members := buildGroupMemberships(convID, allMemberIDs)
 
-	if err := s.roomRepo.BatchInsertConversationMembers(ctx, members); err != nil {
+	if err := s.cache.UpdateMembership(ctx, convID, func(writeCtx context.Context, membersRepo repository.ConversationMembers) error {
+		return membersRepo.BatchInsertConversationMembers(writeCtx, members)
+	}); err != nil {
 		return nil, ae.Internal(err)
 	}
 
 	// Warm member cache
-	go s.warmMemberCache(ctx, convID, allMemberIDs)
+	go s.warmMemberCache(ctx, convID)
 
 	s.enqueueSystemMessage(ctx, convID, currentUID, "Group created")
 
@@ -405,11 +406,12 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 		Role:           model.RoleMember,
 	}
 	// ignore khi đã là member err == nil
-	err = s.roomRepo.InsertConversationMember(ctx, arg)
+	err = s.cache.UpdateMembership(ctx, convUID, func(writeCtx context.Context, membersRepo repository.ConversationMembers) error {
+		return membersRepo.InsertConversationMember(writeCtx, arg)
+	})
 	if err != nil {
 		return ae.Internal(err)
 	}
-	s.cacheAddedMember(ctx, convUID, targetUID)
 	s.enqueueSystemMessage(ctx, convUID, actorUID, fmt.Sprintf("%s added %s", actorName, targetUser.Username))
 	// Push notification
 	convHex := hex.EncodeToString(convUID)
@@ -430,21 +432,6 @@ func (s *RoomService) AddMember(ctx context.Context, convUID, actorUID, targetUI
 	}
 	s.publishConvSubscribe(ctx, targetUID, convUID, targetPayload)
 	return nil
-}
-
-// A cache failure must not undo the completed membership write.
-func (s *RoomService) cacheAddedMember(ctx context.Context, convUID, targetUID []byte) {
-	if err := s.cache.AddMember(ctx, convUID, targetUID); err != nil {
-		invalidateCtx, cancel := detachedContext(ctx, cacheTaskTimeout)
-		invalidateErr := s.cache.InvalidateMembers(invalidateCtx, convUID)
-		cancel()
-		if invalidateErr != nil {
-			s.logger.Warn("roomService.AddMember: failed to invalidate member cache",
-				zap.String("conv_id", hex.EncodeToString(convUID)),
-				zap.Error(invalidateErr),
-			)
-		}
-	}
 }
 
 func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, targetUID []byte, actorName string) error {
@@ -477,12 +464,14 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 	}
 
 	// 3/ Xóa member
-	err = s.roomRepo.DeleteConversationMember(ctx, convID, targetUID)
+	err = s.cache.UpdateMembership(ctx, convID, func(writeCtx context.Context, membersRepo repository.ConversationMembers) error {
+		return membersRepo.DeleteConversationMember(writeCtx, convID, targetUID)
+	})
 	if err != nil {
 		return ae.Internal(err)
 	}
 
-	go s.removeMemberCache(ctx, convID, targetUID)
+	go s.removeMemberUnread(ctx, convID, targetUID)
 
 	action := "left"
 	if !isSelf {
@@ -511,22 +500,10 @@ func (s *RoomService) RemoveMember(ctx context.Context, convID, actorUID, target
 }
 
 // Run after persistence with a detached context, even if the request is canceled.
-func (s *RoomService) removeMemberCache(parent context.Context, convID, targetUID []byte) {
+func (s *RoomService) removeMemberUnread(parent context.Context, convID, targetUID []byte) {
 	cacheCtx, cancel := detachedContext(parent, sideEffectTimeout)
 	defer cancel()
 
-	if err := s.cache.RemoveMember(cacheCtx, convID, targetUID); err != nil {
-		s.logger.Warn("roomService.RemoveMember: failed to remove member from cache",
-			zap.String("conv_id", hex.EncodeToString(convID)),
-			zap.Error(err),
-		)
-		if invalidateErr := s.cache.InvalidateMembers(cacheCtx, convID); invalidateErr != nil {
-			s.logger.Warn("roomService.RemoveMember: failed to invalidate member cache",
-				zap.String("conv_id", hex.EncodeToString(convID)),
-				zap.Error(invalidateErr),
-			)
-		}
-	}
 	if err := s.cache.DeleteUnread(cacheCtx, targetUID, convID); err != nil {
 		s.logger.Warn("roomService.RemoveMember: failed to delete unread cache",
 			zap.String("conv_id", hex.EncodeToString(convID)),
@@ -673,14 +650,8 @@ func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID
 
 	for _, conv := range convs {
 		members, err := s.cache.GetMembers(ctx, conv.ID)
-		if err != nil || len(members) == 0 {
-			members, err = s.roomRepo.GetConversationMemberIDs(ctx, conv.ID)
-			if err != nil {
-				continue
-			}
-			if len(members) > 0 {
-				go s.warmMemberCache(ctx, conv.ID, members)
-			}
+		if err != nil {
+			continue
 		}
 
 		cidHex := hex.EncodeToString(conv.ID)
@@ -719,11 +690,11 @@ func (s *RoomService) attachConversationPresence(ctx context.Context, currentUID
 	}
 }
 
-func (s *RoomService) warmMemberCache(parent context.Context, convID []byte, memberIDs [][]byte) {
+func (s *RoomService) warmMemberCache(parent context.Context, convID []byte) {
 	cacheCtx, cancel := detachedContext(parent, cacheTaskTimeout)
 	defer cancel()
 
-	if err := s.cache.WarmMember(cacheCtx, convID, memberIDs); err != nil {
+	if _, err := s.cache.GetMembers(cacheCtx, convID); err != nil {
 		s.logger.Warn("roomService: failed to warm member cache",
 			zap.String("conv_id", hex.EncodeToString(convID)),
 			zap.Error(err),

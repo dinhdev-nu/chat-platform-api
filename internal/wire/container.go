@@ -30,16 +30,16 @@ func NewContainer(ctx context.Context) *Container {
 	jwt := provider.NewJWTManager()
 	roomManager := websocket.NewRoomManager(g.RedisClient)
 	roomViewer := roomManager
-	hub := websocket.NewHub(ctx, g.RedisClient, roomManager, g.Logger)
-	go hub.Run()
 
 	// repositories
 	userRepo := provider.NewUserRepository()
 	userTokenRepo := provider.NewUserTokenRepository()
 	roomRepo := provider.NewRoomRepository()
 	messageRepo := provider.NewMessageRepository()
+	roomCache := cache.NewRoomCache(g.RedisClient, roomRepo, g.Logger)
+	hub := websocket.NewHub(ctx, g.RedisClient, roomManager, roomCache, g.Logger)
+	go hub.Run()
 
-	roomCache := cache.NewRoomCache(g.RedisClient)
 	sequences := redis.NewSequenceStore(g.RedisClient, messageRepo)
 
 	// services

@@ -41,11 +41,9 @@ type MessageRooms interface {
 	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
 }
 type MessageCache interface {
-	IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error)
+	IsMember(ctx context.Context, convID, userID []byte) (bool, error)
 	GetMembers(ctx context.Context, convID []byte) ([][]byte, error)
-	WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error
 	BatchIncrUnread(ctx context.Context, userIDs [][]byte, convID []byte) error
-	RefreshTTL(ctx context.Context, convID []byte) error
 	SetUnread(ctx context.Context, userID, convID []byte, count int64) error
 	DeleteUnread(ctx context.Context, userID, convID []byte) error
 }
@@ -458,6 +456,9 @@ func (s *MessageService) EditMessage(ctx context.Context, userID, msgID []byte, 
 	if err != nil {
 		return nil, err
 	}
+	if err := s.requireMembership(ctx, msg.ConversationID, userID); err != nil {
+		return nil, err
+	}
 	if msg.IsDeleted {
 		return nil, ae.New(ae.ErrMessageDeleted, "Message has been deleted")
 	}
@@ -551,7 +552,7 @@ func (s *MessageService) ToggleReaction(ctx context.Context, userID, msgID []byt
 		return "", err
 	}
 	if err := s.requireMembership(ctx, msg.ConversationID, userID); err != nil {
-		return "", ae.Internal(err)
+		return "", err
 	}
 	if msg.IsDeleted {
 		return "", ae.New(ae.ErrMessageDeleted, "Message has been deleted")
@@ -616,7 +617,7 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	}
 
 	// Update unread counts (cache)
-	members, cacheHit, err := s.getMembersCached(ctx, msg.ConversationID)
+	members, err := s.cache.GetMembers(ctx, msg.ConversationID)
 	allOffMembers := make([][]byte, 0)
 	if err != nil {
 		s.logger.Warn("messageService.afterSend: failed to load conversation members", zap.Error(err))
@@ -634,17 +635,6 @@ func (s *MessageService) afterSend(parent context.Context, msgWithMeta *model.Me
 	if len(allOffMembers) > 0 {
 		if err := s.cache.BatchIncrUnread(ctx, allOffMembers, msg.ConversationID); err != nil {
 			s.logger.Warn("messageService.afterSend: failed to increment unread cache", zap.Error(err))
-		} else if cacheHit {
-			if err := s.cache.RefreshTTL(ctx, msg.ConversationID); err != nil {
-				s.logger.Warn("messageService.afterSend: failed to refresh member cache TTL", zap.Error(err))
-			}
-		}
-	}
-
-	// The whole afterSend workflow is already asynchronous.
-	if err == nil && !cacheHit && len(members) > 0 {
-		if err := s.cache.WarmMember(ctx, msg.ConversationID, members); err != nil {
-			s.logger.Warn("messageService.afterSend: failed to warm member cache", zap.Error(err))
 		}
 	}
 }
@@ -695,22 +685,6 @@ func (s *MessageService) updateConversationLastActivityFallback(
 	}
 }
 
-func (s *MessageService) getMembersCached(ctx context.Context, convID []byte) ([][]byte, bool, error) {
-	members, err := s.cache.GetMembers(ctx, convID)
-	if err == nil && len(members) > 0 {
-		return members, true, nil
-	}
-	if err != nil {
-		s.logger.Warn("member cache unavailable, falling back to DB", zap.Error(err))
-	}
-
-	members, err = s.roomRepo.GetConversationMemberIDs(ctx, convID)
-	if err != nil {
-		return nil, false, ae.Internal(err)
-	}
-	return members, false, nil
-}
-
 func (s *MessageService) getMessageRequired(ctx context.Context, msgID []byte) (*model.Message, error) {
 	msg, err := s.msgRepo.GetMessageByID(ctx, msgID)
 	if err != nil {
@@ -723,18 +697,14 @@ func (s *MessageService) getMessageRequired(ctx context.Context, msgID []byte) (
 }
 
 func (s *MessageService) requireMembership(ctx context.Context, convID, senderUID []byte) error {
-	isMember, hit, err := s.cache.IsMember(ctx, convID, senderUID)
-	if err == nil && hit {
-		if isMember {
-			return nil
-		}
-		// Negative cache can be stale immediately after a member is added.
-		// Verify against DB before denying access.
+	isMember, err := s.cache.IsMember(ctx, convID, senderUID)
+	if err != nil {
+		return ae.Internal(err)
 	}
-
-	// Fallback db
-	_, err = s.getMemberRoleRequired(ctx, convID, senderUID)
-	return err
+	if !isMember {
+		return ae.New(ae.ErrNotAMember, "User is not a member of the conversation")
+	}
+	return nil
 }
 
 func (s *MessageService) getMemberRoleRequired(ctx context.Context, convID, userID []byte) (model.MemberRole, error) {

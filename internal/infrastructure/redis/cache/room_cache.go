@@ -2,21 +2,42 @@ package cache
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/dinhdev-nu/chat-platform-api/internal/repository"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
-type RoomCache struct{ client *redis.Client }
+type MembershipSource interface {
+	GetConversationMemberIDs(context.Context, []byte) ([][]byte, error)
+	WithMembershipLock(context.Context, []byte, func(repository.ConversationMembers) error) error
+}
 
-func NewRoomCache(client *redis.Client) *RoomCache { return &RoomCache{client: client} }
+type RoomCache struct {
+	client  *redis.Client
+	members MembershipSource
+	logger  *zap.Logger
+}
+
+func NewRoomCache(client *redis.Client, members MembershipSource, logger *zap.Logger) *RoomCache {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	return &RoomCache{client: client, members: members, logger: logger}
+}
 
 const (
-	memberCacheKey = "conv:members:%s" // conv:members:{convID} -> set of memberIDs
-	memberCacheTTL = 5 * time.Minute
+	// A new namespace prevents legacy SADD warmers from affecting authorization.
+	memberCacheKey             = "conv:members:v2:%s"
+	memberCacheTTL             = 5 * time.Minute
+	membershipOperationTimeout = 5 * time.Second
 )
 
 func UnreadKey(userID, convID []byte) string {
@@ -39,89 +60,105 @@ func (c *RoomCache) IncrUnread(ctx context.Context, userID, convID []byte) error
 	return c.client.Incr(ctx, UnreadKey(userID, convID)).Err()
 }
 
-func (c *RoomCache) GetMembers(ctx context.Context, convID []byte) ([][]byte, error) {
-	key := memberKey(convID)
-	members, err := c.client.SMembers(ctx, key).Result()
-	if err != nil {
-		return nil, err
+var readMembersScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], '_ready') ~= '1' then return {} end
+return redis.call('HKEYS', KEYS[1])
+`)
+
+func (c *RoomCache) cachedMembers(ctx context.Context, convID []byte) ([][]byte, bool, error) {
+	values, err := readMembersScript.Run(ctx, c.client, []string{memberKey(convID)}).StringSlice()
+	if err != nil || len(values) == 0 {
+		return nil, false, err
 	}
-	if len(members) == 0 {
-		return nil, nil // cache MISS
-	}
-	// Convert hex strings back to byte slices
-	result := make([][]byte, 0, len(members))
-	for _, m := range members {
-		b, err := hex.DecodeString(m)
-		if err != nil {
+	ids := make([][]byte, 0, len(values)-1)
+	for _, value := range values {
+		if value == "_ready" {
 			continue
 		}
-		result = append(result, b)
+		id, err := hex.DecodeString(value)
+		if err != nil || len(id) != 16 {
+			return nil, false, fmt.Errorf("invalid cached member ID")
+		}
+		ids = append(ids, id)
 	}
-	return result, nil
+	return ids, true, nil
 }
 
-func (c *RoomCache) WarmMember(ctx context.Context, convID []byte, userIDs [][]byte) error {
-	if len(userIDs) == 0 {
+func (c *RoomCache) GetMembers(ctx context.Context, convID []byte) ([][]byte, error) {
+	ids, hit, err := c.cachedMembers(ctx, convID)
+	if err != nil {
+		return c.members.GetConversationMemberIDs(ctx, convID)
+	}
+	if hit {
+		return ids, nil
+	}
+	return c.loadMembers(ctx, convID)
+}
+
+// A fill may finish after its DB connection/lock was lost. Its token prevents
+// publishing that old snapshot after a membership write invalidated the key.
+var storeMembersScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], '_loading') ~= ARGV[1] then return 0 end
+redis.call('DEL', KEYS[1])
+redis.call('HSET', KEYS[1], '_ready', '1')
+for i = 3, #ARGV do redis.call('HSET', KEYS[1], ARGV[i], '1') end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return 1
+`)
+
+func (c *RoomCache) loadMembers(parent context.Context, convID []byte) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, membershipOperationTimeout)
+	defer cancel()
+	var ids [][]byte
+	err := c.members.WithMembershipLock(ctx, convID, func(source repository.ConversationMembers) error {
+		cached, hit, cacheErr := c.cachedMembers(ctx, convID)
+		if cacheErr == nil && hit {
+			ids = cached
+			return nil
+		}
+		key, token := memberKey(convID), uuid.NewString()
+		if cacheErr == nil {
+			_, cacheErr = c.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Del(ctx, key)
+				pipe.HSet(ctx, key, "_loading", token)
+				pipe.Expire(ctx, key, memberCacheTTL)
+				return nil
+			})
+		}
+		var err error
+		ids, err = source.GetConversationMemberIDs(ctx, convID)
+		if err != nil {
+			return err
+		}
+		if cacheErr == nil {
+			args := []any{token, int(memberCacheTTL.Seconds())}
+			for _, id := range ids {
+				args = append(args, hex.EncodeToString(id))
+			}
+			cacheErr = storeMembersScript.Run(ctx, c.client, []string{key}, args...).Err()
+		}
+		if cacheErr != nil {
+			c.logger.Warn("failed to cache conversation members", zap.Error(cacheErr))
+		}
 		return nil
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-
-	k := memberKey(convID)
-	pipe := c.client.Pipeline()
-	for _, mID := range userIDs {
-		pipe.SAdd(ctx, k, hex.EncodeToString(mID))
-	}
-	pipe.Expire(ctx, k, memberCacheTTL)
-	_, err := pipe.Exec(ctx)
-	return err
+	return ids, err
 }
 
-func (c *RoomCache) RefreshTTL(ctx context.Context, convID []byte) error {
-	key := memberKey(convID)
-	return c.client.Expire(ctx, key, memberCacheTTL).Err()
-}
-
-func (c *RoomCache) InvalidateMembers(ctx context.Context, convID []byte) error {
-	return c.client.Del(ctx, memberKey(convID)).Err()
-}
-
-var addMemberScript = redis.NewScript(`
-    local key = KEYS[1]
-    local member = ARGV[1]
-    local ttl = tonumber(ARGV[2])
-    if redis.call("EXISTS", key) == 1 then
-        redis.call("SADD", key, member)
-        redis.call("EXPIRE", key, ttl)
-        return 1
-    end
-    return 0
-`)
-
-var removeMemberScript = redis.NewScript(`
-    local key = KEYS[1]
-    local member = ARGV[1]
-    local ttl = tonumber(ARGV[2])
-    if redis.call("EXISTS", key) == 1 then
-        redis.call("SREM", key, member)
-        redis.call("EXPIRE", key, ttl)
-        return 1
-    end
-    return 0
-`)
-
-func (c *RoomCache) AddMember(ctx context.Context, convID, userID []byte) error {
-	return addMemberScript.Run(ctx, c.client,
-		[]string{memberKey(convID)},
-		hex.EncodeToString(userID),
-		int(memberCacheTTL.Seconds()),
-	).Err()
-}
-
-func (c *RoomCache) RemoveMember(ctx context.Context, convID, userID []byte) error {
-	return removeMemberScript.Run(ctx, c.client,
-		[]string{memberKey(convID)},
-		hex.EncodeToString(userID),
-		int(memberCacheTTL.Seconds()),
-	).Err()
+// Invalidate before persistence while holding the same lock as cache fills.
+// If Redis cannot invalidate, do not change DB membership and leave stale grants.
+func (c *RoomCache) UpdateMembership(parent context.Context, convID []byte, apply func(context.Context, repository.ConversationMembers) error) error {
+	ctx, cancel := context.WithTimeout(parent, membershipOperationTimeout)
+	defer cancel()
+	return c.members.WithMembershipLock(ctx, convID, func(source repository.ConversationMembers) error {
+		if err := c.client.Del(ctx, memberKey(convID)).Err(); err != nil {
+			return fmt.Errorf("invalidate membership before update: %w", err)
+		}
+		return apply(ctx, source)
+	})
 }
 
 func (c *RoomCache) SetUnread(ctx context.Context, userID, convID []byte, count int64) error {
@@ -170,22 +207,31 @@ func (c *RoomCache) ResetUnread(ctx context.Context, userID []byte, convID []byt
 	return c.client.Set(ctx, UnreadKey(userID, convID), 0, 0).Err()
 }
 
-func (c *RoomCache) IsMember(ctx context.Context, convID, userID []byte) (isMember bool, cacheHit bool, err error) {
-	key := memberKey(convID)
-	uidHex := hex.EncodeToString(userID)
+var isMemberScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], '_ready') ~= '1' then return -1 end
+return redis.call('HEXISTS', KEYS[1], ARGV[1])
+`)
 
-	// Pipeline EXISTS + SISMEMBER — 1 round-trip duy nhất.
-	pipe := c.client.Pipeline()
-	existsCmd := pipe.Exists(ctx, key)
-	ismemberCmd := pipe.SIsMember(ctx, key, uidHex)
-	if _, err = pipe.Exec(ctx); err != nil {
-		return false, false, err
+func (c *RoomCache) IsMember(ctx context.Context, convID, userID []byte) (bool, error) {
+	result, err := isMemberScript.Run(ctx, c.client, []string{memberKey(convID)}, hex.EncodeToString(userID)).Int()
+	if err == nil && result >= 0 {
+		return result == 1, nil
 	}
-
-	if existsCmd.Val() == 0 {
-		return false, false, nil // cache MISS — key chưa warm
+	var ids [][]byte
+	if err != nil {
+		ids, err = c.members.GetConversationMemberIDs(ctx, convID)
+	} else {
+		ids, err = c.loadMembers(ctx, convID)
 	}
-	return ismemberCmd.Val(), true, nil // cache HIT — authoritative
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if string(id) == string(userID) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func memberKey(convID []byte) string {

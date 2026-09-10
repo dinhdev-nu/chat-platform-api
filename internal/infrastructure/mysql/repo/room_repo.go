@@ -24,6 +24,24 @@ func NewRoomRepository(db *sql.DB) r.RoomRepository {
 	}
 }
 
+// The row lock is held through commit and is released automatically on rollback.
+// Cache fills use the same lock as membership writes, including across API nodes.
+func (r *roomRepo) WithMembershipLock(ctx context.Context, convID []byte, apply func(r.ConversationMembers) error) error {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("membership transaction: %w", err)
+	}
+	defer tx.Rollback()
+	queries := r.q.WithTx(tx)
+	if _, err := queries.LockConversationMembership(ctx, convID); err != nil {
+		return fmt.Errorf("lock conversation membership: %w", err)
+	}
+	if err := apply(&roomRepo{q: queries}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (r *roomRepo) GetUserConversationIDs(ctx context.Context, userID []byte) ([][]byte, error) {
 	rows, err := r.q.GetUserConversationIDs(ctx, userID)
 	if err != nil {

@@ -42,6 +42,8 @@ type Querier interface {
 	ListMessagesFirstPage(ctx context.Context, arg ListMessagesFirstPageParams) ([]Message, error)
 	// Cursor pagination dùng (created_at, seq) — time trước thu hẹp phạm vi.
 	ListMessagesNextPage(ctx context.Context, arg ListMessagesNextPageParams) ([]Message, error)
+	// Serialize membership writes and cache fills on the same conversation.
+	LockConversationMembership(ctx context.Context, id []byte) ([]byte, error)
 	SoftDeleteMessage(ctx context.Context, id []byte) error
 	// Updated by the Redis Streams worker, or synchronously by the service fallback.
 	UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error

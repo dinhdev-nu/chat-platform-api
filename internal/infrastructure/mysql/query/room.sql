@@ -80,6 +80,10 @@ SELECT role FROM conversation_members
 WHERE conversation_id = ? AND user_id = ?
 LIMIT 1;
 
+-- name: LockConversationMembership :one
+-- Serialize membership writes and cache fills on the same conversation.
+SELECT id FROM conversations WHERE id = ? FOR UPDATE;
+
 -- name: DeleteConversationMember :exec
 DELETE FROM conversation_members
 WHERE conversation_id = ? AND user_id = ?;

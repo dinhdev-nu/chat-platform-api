@@ -21,6 +21,11 @@ type hubPubSub interface {
 	Close() error
 }
 
+type conversationMembership interface {
+	GetMembers(context.Context, []byte) ([][]byte, error)
+	IsMember(context.Context, []byte, []byte) (bool, error)
+}
+
 type Hub struct {
 	ctx  context.Context
 	done chan struct{}
@@ -38,13 +43,14 @@ type Hub struct {
 	// channel -> uid -> present
 	channels map[string]map[string]struct{}
 
-	rdb    *redis.Client
-	pubsub hubPubSub
-	rm     *RoomManager
-	log    *zap.Logger
+	rdb     *redis.Client
+	pubsub  hubPubSub
+	rm      *RoomManager
+	log     *zap.Logger
+	members conversationMembership
 }
 
-func NewHub(ctx context.Context, rdb *redis.Client, rm *RoomManager, log *zap.Logger) *Hub {
+func NewHub(ctx context.Context, rdb *redis.Client, rm *RoomManager, members conversationMembership, log *zap.Logger) *Hub {
 	pubsub := rdb.Subscribe(ctx, presenceEventChannel)
 	subscribeCtx, cancel := context.WithTimeout(ctx, redisOperationTimeout)
 	if _, err := pubsub.Receive(subscribeCtx); err != nil {
@@ -63,6 +69,7 @@ func NewHub(ctx context.Context, rdb *redis.Client, rm *RoomManager, log *zap.Lo
 		pubsub:   pubsub,
 		rm:       rm,
 		log:      log,
+		members:  members,
 	}
 }
 
@@ -315,6 +322,20 @@ func (h *Hub) dispatchAndIntercept(channel string, payload []byte) {
 
 func (h *Hub) dispatchToClients(channel string, payload []byte) {
 	skipUID := skipUIDForPayload(payload)
+	var allowed map[string]bool
+	if strings.HasPrefix(channel, "notify:") {
+		h.channelsMu.RLock()
+		hasSubscribers := len(h.channels[channel]) > 0
+		h.channelsMu.RUnlock()
+		convID, ok := decodeSysConvID(strings.TrimPrefix(channel, "notify:"))
+		if !ok || !hasSubscribers {
+			return
+		}
+		allowed = h.authorizedMembers(convID)
+		if len(allowed) == 0 {
+			return
+		}
+	}
 
 	h.channelsMu.RLock()
 	uids, ok := h.channels[channel]
@@ -326,7 +347,7 @@ func (h *Hub) dispatchToClients(channel string, payload []byte) {
 	targets := make([]*Client, 0)
 	h.clientsMu.RLock()
 	for uid := range uids {
-		if uid == skipUID {
+		if uid == skipUID || (allowed != nil && !allowed[uid]) {
 			continue
 		}
 		if sessions, ok := h.clients[uid]; ok {
@@ -346,6 +367,30 @@ func (h *Hub) dispatchToClients(channel string, payload []byte) {
 			h.Unregister(c)
 		}
 	}
+}
+
+// Local subscriptions can outlive a missed removal event; use shared membership.
+func (h *Hub) authorizedMembers(convID []byte) map[string]bool {
+	ctx, cancel := context.WithTimeout(h.ctx, redisOperationTimeout)
+	defer cancel()
+	ids, err := h.members.GetMembers(ctx, convID)
+	if err != nil {
+		h.log.Warn("failed to authorize conversation recipients", zap.Error(err))
+		return nil
+	}
+	allowed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		allowed[hex.EncodeToString(id)] = true
+	}
+	return allowed
+}
+
+func (h *Hub) isMember(ctx context.Context, convID, userID []byte) bool {
+	isMember, err := h.members.IsMember(ctx, convID, userID)
+	if err != nil {
+		h.log.Warn("failed to authorize conversation access", zap.Error(err))
+	}
+	return err == nil && isMember
 }
 
 func skipUIDForPayload(payload []byte) string {
@@ -502,6 +547,12 @@ func (h *Hub) handleSysEvent(channel string, payload []byte) {
 		if !ok {
 			return
 		}
+		ctx, cancel := h.redisContext()
+		allowed := h.isMember(ctx, cidBytes, sessions[0].uid)
+		cancel()
+		if !allowed {
+			return
+		}
 		activeSessions := make([]*Client, 0, len(sessions))
 		for _, client := range sessions {
 			if h.subscribeLocalClient(client, cidBytes) {
@@ -656,9 +707,20 @@ func (h *Hub) convPresenceTargets(uidHex, cidHex string) []*Client {
 	}
 	h.channelsMu.RUnlock()
 
+	cid, ok := decodeSysConvID(cidHex)
+	if !ok || len(targetUIDs) == 0 {
+		return nil
+	}
+	allowed := h.authorizedMembers(cid)
+	if !allowed[uidHex] {
+		return nil
+	}
 	targets := make([]*Client, 0, len(targetUIDs))
 	h.clientsMu.RLock()
 	for _, targetUID := range targetUIDs {
+		if !allowed[targetUID] {
+			continue
+		}
 		for _, client := range h.clients[targetUID] {
 			targets = append(targets, client)
 		}
