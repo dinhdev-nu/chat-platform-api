@@ -11,6 +11,39 @@ import (
 	"time"
 )
 
+const advanceReadWatermark = `-- name: AdvanceReadWatermark :execrows
+UPDATE conversation_members
+SET    last_read_at = ?, last_read_seq = ?
+WHERE  conversation_id = ?
+  AND  user_id = ?
+  AND  (last_read_at IS NULL OR last_read_at < ?
+        OR (last_read_at = ? AND last_read_seq < ?))
+`
+
+type AdvanceReadWatermarkParams struct {
+	ReadAt         *time.Time
+	ReadSeq        uint64
+	ConversationID []byte
+	UserID         []byte
+}
+
+// Advance atomically, including messages sharing the same millisecond.
+func (q *Queries) AdvanceReadWatermark(ctx context.Context, arg AdvanceReadWatermarkParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, advanceReadWatermark,
+		arg.ReadAt,
+		arg.ReadSeq,
+		arg.ConversationID,
+		arg.UserID,
+		arg.ReadAt,
+		arg.ReadAt,
+		arg.ReadSeq,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const createConversation = `-- name: CreateConversation :exec
 INSERT INTO conversations
     (id, type, name, avatar_url, description, created_by, last_activity_at)
@@ -95,7 +128,7 @@ func (q *Queries) GetConversationByID(ctx context.Context, id []byte) (GetConver
 }
 
 const getConversationMember = `-- name: GetConversationMember :one
-SELECT id, conversation_id, user_id, role, is_muted, last_read_at, joined_at
+SELECT id, conversation_id, user_id, role, is_muted, joined_at, last_read_at, last_read_seq
 FROM conversation_members
 WHERE conversation_id = ? AND user_id = ?
 LIMIT 1
@@ -115,8 +148,9 @@ func (q *Queries) GetConversationMember(ctx context.Context, arg GetConversation
 		&i.UserID,
 		&i.Role,
 		&i.IsMuted,
-		&i.LastReadAt,
 		&i.JoinedAt,
+		&i.LastReadAt,
+		&i.LastReadSeq,
 	)
 	return i, err
 }
@@ -435,7 +469,7 @@ JOIN messages m ON m.conversation_id = c.id
 LEFT JOIN messages previous ON previous.id = c.last_message_id
 SET c.last_message_id = m.id,
     c.last_message_text = CASE WHEN m.is_deleted = 1 THEN 'Message deleted' ELSE LEFT(m.content, 1000) END,
-    c.last_activity_at = GREATEST(COALESCE(c.last_activity_at, m.created_at), m.created_at),
+    c.last_activity_at = m.created_at,
     c.updated_at = NOW(3)
 WHERE c.id = ? AND m.id = ?
   AND (previous.id IS NULL OR m.created_at > previous.created_at
@@ -451,30 +485,5 @@ type UpdateConversationLastActivityParams struct {
 // or promote an older message. The ordering matches message history pagination.
 func (q *Queries) UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error {
 	_, err := q.db.ExecContext(ctx, updateConversationLastActivity, arg.ConversationID, arg.MessageID)
-	return err
-}
-
-const updateLastReadAt = `-- name: UpdateLastReadAt :exec
-UPDATE conversation_members
-SET    last_read_at = ?
-WHERE  conversation_id = ?
-  AND  user_id        = ?
-  AND  (last_read_at IS NULL OR last_read_at < ?)
-`
-
-type UpdateLastReadAtParams struct {
-	LastReadAt     *time.Time
-	ConversationID []byte
-	UserID         []byte
-	LastReadAt_2   *time.Time
-}
-
-func (q *Queries) UpdateLastReadAt(ctx context.Context, arg UpdateLastReadAtParams) error {
-	_, err := q.db.ExecContext(ctx, updateLastReadAt,
-		arg.LastReadAt,
-		arg.ConversationID,
-		arg.UserID,
-		arg.LastReadAt_2,
-	)
 	return err
 }

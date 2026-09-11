@@ -67,12 +67,14 @@ WHERE cm.user_id = ?
 ORDER BY c.last_activity_at DESC, c.id DESC
 LIMIT ?;
 
--- name: UpdateLastReadAt :exec
+-- name: AdvanceReadWatermark :execrows
+-- Advance atomically, including messages sharing the same millisecond.
 UPDATE conversation_members
-SET    last_read_at = ?
-WHERE  conversation_id = ?
-  AND  user_id        = ?
-  AND  (last_read_at IS NULL OR last_read_at < ?);
+SET    last_read_at = sqlc.arg(read_at), last_read_seq = sqlc.arg(read_seq)
+WHERE  conversation_id = sqlc.arg(conversation_id)
+  AND  user_id = sqlc.arg(user_id)
+  AND  (last_read_at IS NULL OR last_read_at < sqlc.arg(read_at)
+        OR (last_read_at = sqlc.arg(read_at) AND last_read_seq < sqlc.arg(read_seq)));
 
 
 -- name: GetMemberRole :one
@@ -89,7 +91,7 @@ DELETE FROM conversation_members
 WHERE conversation_id = ? AND user_id = ?;
 
 -- name: GetConversationMember :one
-SELECT id, conversation_id, user_id, role, is_muted, last_read_at, joined_at
+SELECT id, conversation_id, user_id, role, is_muted, joined_at, last_read_at, last_read_seq
 FROM conversation_members
 WHERE conversation_id = ? AND user_id = ?
 LIMIT 1;
@@ -108,7 +110,7 @@ JOIN messages m ON m.conversation_id = c.id
 LEFT JOIN messages previous ON previous.id = c.last_message_id
 SET c.last_message_id = m.id,
     c.last_message_text = CASE WHEN m.is_deleted = 1 THEN 'Message deleted' ELSE LEFT(m.content, 1000) END,
-    c.last_activity_at = GREATEST(COALESCE(c.last_activity_at, m.created_at), m.created_at),
+    c.last_activity_at = m.created_at,
     c.updated_at = NOW(3)
 WHERE c.id = sqlc.arg(conversation_id) AND m.id = sqlc.arg(message_id)
   AND (previous.id IS NULL OR m.created_at > previous.created_at

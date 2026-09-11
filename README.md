@@ -192,6 +192,9 @@ migration. Existing migrations, including the historical creation and removal of
 managed by GORM. For schema changes, follow the owning model/migration and review
 the resulting SQL; AutoMigrate does not replace explicit data migrations.
 
+For the #22 read-watermark migration, follow the [deployment procedure](internal/infrastructure/mysql/migrations/README.md):
+pause writers, apply the migration, and rebuild Redis unread counts before restarting.
+
 Files in `internal/infrastructure/mysql/sqlc/` with a `Code generated ... DO NOT EDIT`
 header are generated output. Edit their SQL/config inputs and regenerate them.
 `batch_helpers.go` and `to_domain.go` are handwritten extensions in that package;

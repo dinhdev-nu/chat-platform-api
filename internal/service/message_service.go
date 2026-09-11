@@ -36,7 +36,7 @@ type MessageUsers interface {
 }
 type MessageRooms interface {
 	RefreshConversationLastMessage(ctx context.Context, convID, msgID []byte) error
-	UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error
+	AdvanceReadWatermark(ctx context.Context, convID, userID []byte, cursor model.MessageCursor) (bool, error)
 	UpdateConversationLastActivity(ctx context.Context, convID, lastMsgID []byte, lastMsgText *string, activityAt time.Time) error
 	GetConversationMemberIDs(ctx context.Context, convID []byte) ([][]byte, error)
 	GetMemberRole(ctx context.Context, convID, userID []byte) (model.MemberRole, error)
@@ -425,15 +425,16 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 		return err
 	}
 
-	cursorTS, err := s.msgRepo.GetMessageCursorTS(ctx, lastReadMsgID, convID)
+	cursor, err := s.msgRepo.GetMessageCursor(ctx, lastReadMsgID, convID)
 	if err != nil {
 		return ae.Internal(err)
 	}
-	if cursorTS == nil {
+	if cursor == nil {
 		return ae.New(ae.ErrInvalidCursor, "Invalid cursor")
 	}
 
-	if err := s.roomRepo.UpdateLastReadAt(ctx, convID, userID, cursorTS); err != nil {
+	advanced, err := s.roomRepo.AdvanceReadWatermark(ctx, convID, userID, *cursor)
+	if err != nil {
 		return ae.Internal(err)
 	}
 	unread, err := s.msgRepo.GetUnreadCountByWatermark(ctx, userID, convID)
@@ -443,6 +444,11 @@ func (s *MessageService) MarkAsRead(ctx context.Context, convID, userID, lastRea
 		_ = s.cache.SetUnread(ctx, userID, convID, unread)
 	}
 
+	// Retries still reconcile the cache, but an old cursor must not publish a
+	// receipt that would move the client's read position backwards.
+	if !advanced {
+		return nil
+	}
 	raw := presenter.MessageReadPayload(convID, userID, lastReadMsgID, s.now())
 	if len(raw) == 0 {
 		s.logger.Error("messageService.MarkAsRead: failed to marshal pubsub payload")

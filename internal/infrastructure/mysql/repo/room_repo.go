@@ -50,17 +50,17 @@ func (r *roomRepo) GetUserConversationIDs(ctx context.Context, userID []byte) ([
 	return rows, nil
 }
 
-func (r *roomRepo) UpdateLastReadAt(ctx context.Context, convID, userID []byte, cursorTS *time.Time) error {
-	err := r.q.UpdateLastReadAt(ctx, sqlc.UpdateLastReadAtParams{
+func (r *roomRepo) AdvanceReadWatermark(ctx context.Context, convID, userID []byte, cursor model.MessageCursor) (bool, error) {
+	affected, err := r.q.AdvanceReadWatermark(ctx, sqlc.AdvanceReadWatermarkParams{
 		ConversationID: convID,
 		UserID:         userID,
-		LastReadAt:     cursorTS,
-		LastReadAt_2:   cursorTS,
+		ReadAt:         &cursor.CreatedAt,
+		ReadSeq:        cursor.Seq,
 	})
 	if err != nil {
-		return fmt.Errorf("roomRepo.UpdateLastReadAt: %w", err)
+		return false, fmt.Errorf("roomRepo.AdvanceReadWatermark: %w", err)
 	}
-	return nil
+	return affected > 0, nil
 }
 
 // Legacy job text/timestamps are intentionally ignored; the stored message is authoritative.

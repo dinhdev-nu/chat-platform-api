@@ -19,7 +19,7 @@ type MessageRepository interface {
 	ListMessages(ctx context.Context, convID []byte, cursorTS *time.Time, cursorSeq *uint64, limit int32) ([]*model.Message, error)
 	GetAttachmentsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.Attachment, error)
 	GetReactionsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.MessageReaction, error)
-	GetMessageCursorTS(ctx context.Context, msgID, convID []byte) (*time.Time, error)
+	GetMessageCursor(ctx context.Context, msgID, convID []byte) (*model.MessageCursor, error)
 	GetUnreadCountByWatermark(ctx context.Context, userID, convID []byte) (int64, error)
 	GetMessageByID(ctx context.Context, id []byte) (*model.Message, error)
 

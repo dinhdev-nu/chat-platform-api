@@ -16,6 +16,12 @@ const (
 	MessageTypeSystem MessageType = 6
 )
 
+// MessageCursor uses the same ordering as message history pagination.
+type MessageCursor struct {
+	CreatedAt time.Time
+	Seq       uint64
+}
+
 type Message struct {
 	ID               []byte
 	ConversationID   []byte
