@@ -56,8 +56,8 @@ FROM message_reactions
 WHERE message_id IN (sqlc.slice(message_ids))
 ORDER BY created_at ASC;
 
--- name: GetMessageCursorTS :one
-SELECT created_at
+-- name: GetMessageCursor :one
+SELECT created_at, seq
 FROM messages
 WHERE id = ? AND conversation_id = ?
 LIMIT 1;
@@ -71,7 +71,8 @@ JOIN   conversation_members cm
 WHERE  m.conversation_id = ?
   AND  m.sender_id       != ?
   AND  m.is_deleted      = 0
-  AND  (cm.last_read_at IS NULL OR m.created_at > cm.last_read_at);
+  AND  (cm.last_read_at IS NULL OR m.created_at > cm.last_read_at
+        OR (m.created_at = cm.last_read_at AND m.seq > cm.last_read_seq));
 
 
 -- name: GetMessageByID :one

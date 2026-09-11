@@ -88,8 +88,8 @@ func (r *messageRepo) GetUnreadCountByWatermark(ctx context.Context, userID, con
 	return count, nil
 }
 
-func (r *messageRepo) GetMessageCursorTS(ctx context.Context, msgID, convID []byte) (*time.Time, error) {
-	ts, err := r.q.GetMessageCursorTS(ctx, sqlc.GetMessageCursorTSParams{
+func (r *messageRepo) GetMessageCursor(ctx context.Context, msgID, convID []byte) (*model.MessageCursor, error) {
+	row, err := r.q.GetMessageCursor(ctx, sqlc.GetMessageCursorParams{
 		ID:             msgID,
 		ConversationID: convID,
 	})
@@ -97,9 +97,9 @@ func (r *messageRepo) GetMessageCursorTS(ctx context.Context, msgID, convID []by
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("messageRepo.GetMessageCursorTS: %w", err)
+		return nil, fmt.Errorf("messageRepo.GetMessageCursor: %w", err)
 	}
-	return &ts, nil
+	return &model.MessageCursor{CreatedAt: row.CreatedAt, Seq: row.Seq}, nil
 }
 
 func (r *messageRepo) GetAttachmentsByMessageIDs(ctx context.Context, msgIDs [][]byte) ([]*model.Attachment, error) {

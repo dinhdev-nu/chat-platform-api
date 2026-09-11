@@ -126,23 +126,28 @@ func (q *Queries) GetMessageByID(ctx context.Context, id []byte) (Message, error
 	return i, err
 }
 
-const getMessageCursorTS = `-- name: GetMessageCursorTS :one
-SELECT created_at
+const getMessageCursor = `-- name: GetMessageCursor :one
+SELECT created_at, seq
 FROM messages
 WHERE id = ? AND conversation_id = ?
 LIMIT 1
 `
 
-type GetMessageCursorTSParams struct {
+type GetMessageCursorParams struct {
 	ID             []byte
 	ConversationID []byte
 }
 
-func (q *Queries) GetMessageCursorTS(ctx context.Context, arg GetMessageCursorTSParams) (time.Time, error) {
-	row := q.db.QueryRowContext(ctx, getMessageCursorTS, arg.ID, arg.ConversationID)
-	var created_at time.Time
-	err := row.Scan(&created_at)
-	return created_at, err
+type GetMessageCursorRow struct {
+	CreatedAt time.Time
+	Seq       uint64
+}
+
+func (q *Queries) GetMessageCursor(ctx context.Context, arg GetMessageCursorParams) (GetMessageCursorRow, error) {
+	row := q.db.QueryRowContext(ctx, getMessageCursor, arg.ID, arg.ConversationID)
+	var i GetMessageCursorRow
+	err := row.Scan(&i.CreatedAt, &i.Seq)
+	return i, err
 }
 
 const getReactionsByMessageIDs = `-- name: GetReactionsByMessageIDs :many
@@ -200,7 +205,8 @@ JOIN   conversation_members cm
 WHERE  m.conversation_id = ?
   AND  m.sender_id       != ?
   AND  m.is_deleted      = 0
-  AND  (cm.last_read_at IS NULL OR m.created_at > cm.last_read_at)
+  AND  (cm.last_read_at IS NULL OR m.created_at > cm.last_read_at
+        OR (m.created_at = cm.last_read_at AND m.seq > cm.last_read_seq))
 `
 
 type GetUnreadCountByWatermarkParams struct {

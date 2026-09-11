@@ -17,6 +17,6 @@ func optionalTime(value *time.Time) *string {
 	if value == nil {
 		return nil
 	}
-	formatted := value.Format(time.RFC3339)
+	formatted := value.Format(time.RFC3339Nano)
 	return &formatted
 }

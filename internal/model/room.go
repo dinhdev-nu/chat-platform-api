@@ -36,6 +36,7 @@ type ConversationMember struct {
 	Role           MemberRole
 	IsMuted        bool
 	LastReadAt     *time.Time
+	LastReadSeq    uint64
 	JoinedAt       time.Time
 }
 

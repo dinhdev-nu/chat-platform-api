@@ -43,12 +43,12 @@ type Conversation struct {
 	// FK → users.id — NULL khi user đã xóa tài khoản
 	CreatedBy sql.NullString
 	// Denormalized — NO FK — cập nhật qua Kafka worker
-	LastMessageID sql.NullString
-	// Sort danh sách conversation
-	LastActivityAt  *time.Time
+	LastMessageID   sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	LastMessageText sql.NullString
+	// Timestamp of the latest message, or creation time for an empty conversation
+	LastActivityAt *time.Time
 }
 
 // Thành viên trong hội thoại
@@ -61,12 +61,11 @@ type ConversationMember struct {
 	// 1=owner 2=admin 3=member — TINYINT tránh ALTER lock
 	Role int8
 	// 1 = tắt thông báo
-	IsMuted bool
-	// Fallback watermark khi Redis miss hoặc message_status chưa backfill.
-	//                                                                Cập nhật = MAX(ms.read_at) khi user đóng conversation.
-	//                                                                KHÔNG dùng để đếm unread: dùng Redis unread:{uid}:{cid} hoặc message_status.
-	LastReadAt *time.Time
-	JoinedAt   time.Time
+	IsMuted  bool
+	JoinedAt time.Time
+	// Read cursor timestamp; compare together with last_read_seq
+	LastReadAt  *time.Time
+	LastReadSeq uint64
 }
 
 // Tin nhắn — core table

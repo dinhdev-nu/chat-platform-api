@@ -26,8 +26,8 @@ func Message(msg *model.Message) dto.MessageResponse {
 		IsEdited:         msg.IsEdited,
 		IsDeleted:        msg.IsDeleted,
 		DeletedAt:        optionalTime(msg.DeletedAt),
-		CreatedAt:        msg.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:        msg.UpdatedAt.Format(time.RFC3339)}
+		CreatedAt:        msg.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:        msg.UpdatedAt.Format(time.RFC3339Nano)}
 
 }
 

@@ -6,10 +6,11 @@ package sqlc
 
 import (
 	"context"
-	"time"
 )
 
 type Querier interface {
+	// Advance atomically, including messages sharing the same millisecond.
+	AdvanceReadWatermark(ctx context.Context, arg AdvanceReadWatermarkParams) (int64, error)
 	CreateConversation(ctx context.Context, arg CreateConversationParams) error
 	DeleteConversationMember(ctx context.Context, arg DeleteConversationMemberParams) error
 	DeleteMessageReaction(ctx context.Context, arg DeleteMessageReactionParams) error
@@ -24,7 +25,7 @@ type Querier interface {
 	GetMaxSeq(ctx context.Context, conversationID []byte) (int64, error)
 	GetMemberRole(ctx context.Context, arg GetMemberRoleParams) (int8, error)
 	GetMessageByID(ctx context.Context, id []byte) (Message, error)
-	GetMessageCursorTS(ctx context.Context, arg GetMessageCursorTSParams) (time.Time, error)
+	GetMessageCursor(ctx context.Context, arg GetMessageCursorParams) (GetMessageCursorRow, error)
 	GetReactionsByMessageIDs(ctx context.Context, messageIds [][]byte) ([]MessageReaction, error)
 	GetUnreadCountByWatermark(ctx context.Context, arg GetUnreadCountByWatermarkParams) (int64, error)
 	// Dùng khi WS connect: load toàn bộ conv user đang tham gia.
@@ -50,7 +51,6 @@ type Querier interface {
 	// Read current content and message ordering so delayed jobs cannot restore old text
 	// or promote an older message. The ordering matches message history pagination.
 	UpdateConversationLastActivity(ctx context.Context, arg UpdateConversationLastActivityParams) error
-	UpdateLastReadAt(ctx context.Context, arg UpdateLastReadAtParams) error
 	UpdateMessageContent(ctx context.Context, arg UpdateMessageContentParams) (int64, error)
 }
 

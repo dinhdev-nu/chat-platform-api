@@ -72,6 +72,7 @@ func (m ConversationMember) ToDomain() *model.ConversationMember {
 		Role:           model.MemberRole(m.Role),
 		IsMuted:        m.IsMuted,
 		LastReadAt:     m.LastReadAt,
+		LastReadSeq:    m.LastReadSeq,
 		JoinedAt:       m.JoinedAt,
 	}
 }
