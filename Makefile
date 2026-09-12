@@ -7,6 +7,16 @@ MIGRATION_DIR := ./internal/infrastructure/mysql/migrations
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
 DSN = "$(shell go run ./cmd/dsn/main.go)"
 
+# Seed uses the API's local config; SEED_DATABASE confirms, rather than overrides, it.
+# Make defaults match the 50-user / 150-room / 50,000-message demo profile.
+SEED_DATABASE ?= chat_platform_api
+SEED_DATASET ?= local-demo-v1
+SEED_CONVERSATIONS ?= 150
+SEED_MESSAGES ?= 50000
+WRITERS_STOPPED ?= 0
+SEED_PROFILE_FLAGS = --users 50 --conversations $(SEED_CONVERSATIONS) --messages $(SEED_MESSAGES)
+SEED_TARGET_FLAGS = --database "$(SEED_DATABASE)" --dataset "$(SEED_DATASET)"
+
 .PHONY: help
 help: ## Show this help 
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -19,6 +29,41 @@ run: ## Run the application
 .PHONY: run-worker
 run-worker: ## Run the standalone Redis Stream worker
 	APP_ENV=$(APP_ENV) go run $(WORKER_MAIN_PATH)
+
+# Export through Make so seed recipes work with both POSIX shells and Windows cmd.
+seed-plan seed-apply seed-verify seed-verify-baseline seed-sync seed-reset: export APP_ENV := $(APP_ENV)
+
+.PHONY: seed-plan
+seed-plan: ## Preview seed data offline (default: 50 users, 150 rooms, 50000 messages)
+	go run ./cmd/seed plan --dataset "$(SEED_DATASET)" $(SEED_PROFILE_FLAGS)
+
+.PHONY: seed-check-writers
+seed-check-writers:
+	@$(if $(filter 1,$(WRITERS_STOPPED)),,$(error Stop API and worker first, then rerun with WRITERS_STOPPED=1))
+
+.PHONY: seed-apply
+seed-apply: seed-check-writers ## Insert seed data and sync Redis (requires WRITERS_STOPPED=1)
+	go run ./cmd/seed apply $(SEED_TARGET_FLAGS) --writers-stopped $(SEED_PROFILE_FLAGS)
+
+.PHONY: seed-verify
+seed-verify: ## Verify the saved dataset against MySQL and Redis after normal app use
+	go run ./cmd/seed verify $(SEED_TARGET_FLAGS)
+
+.PHONY: seed-verify-baseline
+seed-verify-baseline: ## Verify exact original totals immediately after seeding
+	go run ./cmd/seed verify $(SEED_TARGET_FLAGS) --baseline
+
+.PHONY: seed-sync
+seed-sync: seed-check-writers ## Repair seed Redis counters from current MySQL data (requires WRITERS_STOPPED=1)
+	go run ./cmd/seed sync $(SEED_TARGET_FLAGS) --writers-stopped
+
+.PHONY: seed-reset
+seed-reset: seed-check-writers ## Delete seeded rooms and their later messages; keep both test users (requires WRITERS_STOPPED=1)
+	go run ./cmd/seed reset $(SEED_TARGET_FLAGS) --writers-stopped
+
+.PHONY: seed-lint
+seed-lint: ## Lint the seed CLI, generator and storage
+	golangci-lint run ./cmd/seed/... ./internal/seed/...
 
 .PHONY: build
 build: ## Build the application

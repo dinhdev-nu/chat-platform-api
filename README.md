@@ -177,43 +177,23 @@ YAML sections: `server`, `mysql`, `redis`, `logger`, `jwt`, `mail`, `cors`.
 
 ## 🗃 Database
 
-The project uses GORM for user data and Goose migrations for chat data:
-
-| Purpose | Source to edit | How it is applied |
+| Area | Source | Tool |
 |---|---|---|
-| `users`, `oauth_accounts`, `user_tokens`, `user_contacts` | Models in `internal/infrastructure/mysql/gorm/model/`; registration in `gorm/db.go` | GORM AutoMigrate during API/worker initialization or `go run ./cmd/schema` |
-| `conversations`, `conversation_members`, `messages`, `attachments`, `message_reactions`, `message_status`, and chat indexes | New SQL migrations in `internal/infrastructure/mysql/migrations/` | Goose via `make migrate_up` |
-| Typed DB queries | SQL in `internal/infrastructure/mysql/query/` and generation settings in `sqlc.yaml` | `make gen_check` and `make gen` |
-| The `users` schema used by sqlc | `internal/infrastructure/mysql/schema/user_stub.sql` | Code-generation input only; update alongside relevant GORM user field changes |
-
-sqlc reads both migrations and schema stubs. The user stub is not a runtime
-migration. Existing migrations, including the historical creation and removal of
-`user_contacts`, remain part of the migration history; current contact models are
-managed by GORM. For schema changes, follow the owning model/migration and review
-the resulting SQL; AutoMigrate does not replace explicit data migrations.
-
-For the #22 read-watermark migration, follow the [deployment procedure](internal/infrastructure/mysql/migrations/README.md):
-pause writers, apply the migration, and rebuild Redis unread counts before restarting.
-
-Files in `internal/infrastructure/mysql/sqlc/` with a `Code generated ... DO NOT EDIT`
-header are generated output. Edit their SQL/config inputs and regenerate them.
-`batch_helpers.go` and `to_domain.go` are handwritten extensions in that package;
-batch helpers stay there to access `Queries.db`. They can be edited directly.
-The ignored `docs/database/db2.sql`, when present, is a reference snapshot.
-
-After changing user fields referenced by queries, update the GORM model and user
-stub together, then validate and regenerate queries with the pinned sqlc version.
-Review generated diffs before committing. Old migration comments may mention
-Kafka; the current job transport is Redis Streams.
+| Users, authentication and contacts | [GORM models](internal/infrastructure/mysql/gorm/model/) | `go run ./cmd/schema` |
+| Conversations, messages and related tables | [SQL migrations](internal/infrastructure/mysql/migrations/) | Goose |
+| Typed queries | [SQL queries](internal/infrastructure/mysql/query/) and [sqlc.yaml](sqlc.yaml) | sqlc |
 
 ```bash
-make migrate_up           # Apply all pending migrations
-make migrate_status       # Show migration state
-make migrate_down         # Roll back last migration
-make migrate_create name=add_something  # New migration file
-make gen_check            # Validate queries without connecting to the database
-make gen                  # Regenerate query code with sqlc v1.29.0
+make migrate_up                       # Apply pending migrations
+make migrate_status                   # Show migration state
+make migrate_down                     # Roll back the last migration
+make migrate_create name=add_something # Create a migration
+make gen_check                        # Validate SQL queries
+make gen                              # Regenerate query code
 ```
+
+For migration #22, follow the [read-watermark deployment guide](internal/infrastructure/mysql/migrations/README.md).
+See [Contributing](CONTRIBUTING.md#database-changes) for schema and generated-code conventions.
 
 ---
 
@@ -324,82 +304,45 @@ APP_ENV=local go run ./cmd/worker/main.go
 
 ## 🛠 Development
 
+Run these commands from the repository root:
+
 ```bash
-make help           # List all make targets
+make help           # List all targets
 make run            # Run the API server
-make run-worker     # Run background worker
-make build          # Compile binary
-make tidy           # go mod tidy
-make lint           # golangci-lint
-make fmt            # Format handwritten Go source
-make fmt-check      # Check formatting without writing files
-make check          # Format/vet/test; includes local tests when available
-make test           # Requires the untracked local test/ directory
-go run ./test       # Local test suite without Make (requires test/)
+make run-worker     # Run the background worker
+make build          # Build the API binary
+make tidy           # Tidy Go dependencies
+make fmt            # Format Go source
+make fmt-check      # Check formatting
+make lint           # Run golangci-lint
+make check          # Check formatting, vet and tests
+make test           # Run the local test suite (requires test/)
+
+make seed-plan                        # Preview sample data offline
+make seed-apply WRITERS_STOPPED=1       # Write MySQL/Redis; stop API and worker first
+make seed-verify-baseline              # Check original totals immediately after seeding
 ```
 
+On Windows, use Git Bash or WSL for POSIX recipes; seed, format and check targets also support PowerShell.
 
-> The Makefile uses POSIX shell syntax. On Windows, use **Git Bash** or **WSL**.
+### Local sample data
 
-`make check`, `make fmt`, and `make fmt-check` invoke Go commands and also work
-from PowerShell with Go and GNU Make on PATH. Formatting covers handwritten Go
-files in `cmd`, `config`, `global`, `internal`, `pkg`, and `scripts`; generated
-files are left to their generators. Format checks report file paths and fail
-without modifying source. Local test sources can be formatted separately with
-`go run ./scripts/format -w test`.
-
-`.gitattributes` keeps Go and shell files on LF line endings across platforms.
-
-After checking format, when `test/main.go` exists, `make check` runs `go vet ./...` and
-`go test ./... -count=1` through the local overlay runner, including the centralized
-unit/contract tests. Otherwise it runs the standard Go commands directly against
-the checkout. A fresh clone contains no unit/contract tests, so this fallback
-checks compilation and vet without providing the local suite's behavioral coverage.
-Existing `make lint` and `make gen_check` remain available for lint and SQL validation.
-
-Test sources, fixtures, and the overlay runner are maintained locally under `test/`.
-Both `test/` and `audit/` are intentionally ignored by Git and are absent from a
-fresh clone. With the local suite available, use `make check`, `make test`, or
-`go run ./test`; plain `go test ./...` does not load those test sources. `make test`
-reports an error when the local suite is unavailable. Local instructions are in
-`test/README.md`. Keep audit reports, probes, and saved results in `audit/`.
-
-Services receive named `AuthDependencies`, `MessageDependencies`,
-`RoomDependencies`, and `UserDependencies`. Each service file groups its dependency
-interfaces, dependency struct, service struct, constructor, and business methods.
-HTTP handlers declare their consumer interfaces in the corresponding handler file.
-Runtime adapters are assembled in `internal/wire/container.go`. Unit tests supply
-fakes without assigning globals.
-`Now` is optional and defaults to `time.Now`; a nil logger defaults to a no-op
-logger. Required stores/sequence/event adapters must be supplied; optional queue
-and cache behavior is documented on the dependency structs.
-
-`internal/presenter` contains pure REST/realtime mapping. Presence is fetched by
-the service and passed to the mapper as data. Local JSON contract fixtures live in
-`test/testdata/internal/handler/testdata` and `test/testdata/internal/service/testdata`; only regenerate them
-with `STELLO_UPDATE_GOLDEN=1` when an intentional contract change has been reviewed.
-Both message-send wrappers delegate to `Send(ctx, SendMessageCommand)` while
-retaining their existing HTTP response shapes and messages.
+Preview sample users, conversations and messages offline for development and testing.
+Only an explicit apply writes to the API's configured local MySQL and Redis.
+See the [seed guide](cmd/seed/README.md) for profiles, verification, recovery and reset commands.
 
 ---
 
 ## 🤝 Contributing
 
-Before opening a PR:
-
-1. Keep changes focused and scoped
-2. Run `make fmt`; run `go mod tidy` when dependencies change
-3. Run `make check` — no regressions
-4. Run `make gen_check` and `make gen` if SQL queries or generation inputs changed
-5. Follow the [database ownership table](#-database) for schema changes; add a new Goose migration for chat tables and keep relevant GORM models/user stubs in sync
-6. **Never commit** `.env`, local YAML configs, logs, or local test/audit files; keep example configs free of secrets
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks, database changes and architecture conventions.
 
 ---
 
 ## 📝 Open Source Checklist
 
 - [ ] `LICENSE`
-- [ ] `CONTRIBUTING.md`
+- [x] [CONTRIBUTING.md](CONTRIBUTING.md)
 - [ ] `SECURITY.md`
 - [x] `.env.example`
 - [x] Docker / `compose.yaml`
